@@ -1,0 +1,11 @@
+[workspace]
+resolver = "3"
+members = ["crates/logfold-core", "crates/like-local", "crates/like-button"]
+
+[workspace.package]
+edition = "2024"
+version = "0.0.1"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+proptest = "1"

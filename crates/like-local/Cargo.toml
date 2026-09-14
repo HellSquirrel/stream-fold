@@ -1,0 +1,12 @@
+[package]
+name = "like-local"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+description = "The whole idea in one file: a like button. Click flips a flag. Nothing else."
+
+[dependencies]
+logfold-core = { path = "../logfold-core" }
+
+[dev-dependencies]
+proptest.workspace = true

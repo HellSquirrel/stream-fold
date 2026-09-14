@@ -1,0 +1,12 @@
+[package]
+name = "like-button"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+description = "M0 example: click -> optimistic -> Post -> Done/Failed."
+
+[dependencies]
+logfold-core = { path = "../logfold-core" }
+
+[dev-dependencies]
+proptest.workspace = true

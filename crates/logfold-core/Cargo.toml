@@ -1,0 +1,8 @@
+[package]
+name = "logfold-core"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+description = "Append-only event log, pure folds, effects as values, virtual time."
+
+[dependencies]

@@ -4,7 +4,7 @@
 
 use std::collections::BTreeSet;
 
-use logfold_core::{Fold, Log, diff_effects, in_flight};
+use logfold_core::{Checkpoints, Fold, Log, diff_effects, in_flight};
 
 use crate::{Brain, Cell, Cmd, Dir, Effect, Ev, KEY, Room, Vacuum, events};
 
@@ -18,6 +18,11 @@ pub struct Sim {
     pub attacks: u32,
     pub bumps: u32,
     pub ms: u64,
+    /// Host-side checkpoint policy: her state at the end of every frame,
+    /// so reading her heading costs the events since the last frame, not
+    /// the whole log. Only the latest is kept; the sim is a host, not an
+    /// archive.
+    checkpoints: Checkpoints<Brain>,
 }
 
 /// What the human tries to do in a frame, and what the world does to her senses.
@@ -41,7 +46,20 @@ impl Sim {
             attacks: 0,
             bumps: 0,
             ms: 0,
+            checkpoints: Checkpoints::new(),
         }
+    }
+
+    /// Her brain as of the end of `log`, resumed from the last checkpoint.
+    pub fn brain_now(&self, log: &Log<Ev>, brain: &Fold<'_, Ev, Brain>) -> Brain {
+        self.checkpoints.output_at(brain, log.view(), log.len())
+    }
+
+    fn checkpoint(&mut self, log: &Log<Ev>, brain: &Fold<'_, Ev, Brain>) {
+        let n = log.len();
+        let state = self.brain_now(log, brain);
+        self.checkpoints = Checkpoints::new();
+        self.checkpoints.insert(n, state);
     }
 
     /// A command from the owner. Appends the input, then lets the host act.
@@ -67,7 +85,7 @@ impl Sim {
         let mut bumped = false;
         let mut attacked = false;
         if !self.latched
-            && let Some(d) = brain.run(log.view()).heading
+            && let Some(d) = self.brain_now(log, brain).heading
         {
             let t = self.her.step(d);
             if self.room.free(t) {
@@ -100,13 +118,13 @@ impl Sim {
     /// Start whatever she desires that has not been started. An e-stop
     /// becomes a latch the moment it is recorded.
     pub fn host_acts(&mut self, log: &mut Log<Ev>, brain: &Fold<'_, Ev, Brain>) {
-        let v = log.view();
-        let desired: BTreeSet<Effect> = brain.run(v).desired_effects();
-        let d = diff_effects(&desired, &in_flight::<Vacuum>().run(v));
+        let desired: BTreeSet<Effect> = self.brain_now(log, brain).desired_effects();
+        let d = diff_effects(&desired, &in_flight::<Vacuum>().run(log.view()));
         for fx in d.start {
             let req = log.len() as u64;
             log.append(Ev::started(KEY, req, fx));
             self.latched = true;
         }
+        self.checkpoint(log, brain);
     }
 }

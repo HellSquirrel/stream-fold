@@ -250,7 +250,7 @@ fn naive_gets_caught() {
             );
         }
         Err(e) => panic!("unexpected: {e:?}"),
-        Ok(()) => panic!("the fuzzer did not catch the naive policy in 2000 cases"),
+        Ok(()) => panic!("the fuzzer did not catch the naive policy in 500 cases"),
     }
 }
 

@@ -3,20 +3,22 @@
 <title>LogFold: Brunhilda</title>
 <style>
   body { font: 15px/1.5 system-ui, sans-serif; max-width: 44rem; margin: 2rem auto; padding: 0 1rem; color: #222; }
-  canvas { display: block; border: 1px solid #ccc; image-rendering: pixelated; }
+  canvas { display: block; border: 1px solid #bbb; }
   button, select { font: inherit; padding: .35rem .7rem; }
   .row { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; margin: .5rem 0; }
   .muted { color: #777; font-size: .9rem; }
   #status.attack { color: #b00; font-weight: bold; }
   input[type=range] { width: 100%; }
   kbd { border: 1px solid #bbb; border-radius: 3px; padding: 0 .3rem; font-size: .85em; }
+  .legend span { display: inline-block; margin-right: 1rem; }
+  .sw { display: inline-block; width: .9em; height: .9em; vertical-align: -.1em; margin-right: .3em; border: 1px solid #999; }
 </style>
 
 <h1>Brunhilda</h1>
 <p class="muted">You are the blue dot. <kbd>←</kbd><kbd>↑</kbd><kbd>→</kbd><kbd>↓</kbd> move you, <kbd>space</kbd> stands still; each key is one frame. Or press <em>run</em> and try to get in her way.</p>
 
 <div class="row">
-  <label>policy <select id="policy"><option value="1">careful</option><option value="0">naive</option></select></label>
+  <label>policy <select id="policy"><option value="1">careful (map, planner)</option><option value="0">naive (bump and turn)</option></select></label>
   <label><input id="dropout" type="checkbox"> sensor dropouts</label>
   <button id="new">new game</button>
   <button id="start">start</button>
@@ -27,8 +29,17 @@
 
 <canvas id="live" width="480" height="320"></canvas>
 <p id="status"></p>
+<p class="muted legend">
+  <span><i class="sw" style="background:#e9e6df"></i>not yet cleaned</span>
+  <span><i class="sw" style="background:#bfe3c0"></i>cleaned</span>
+  <span><i class="sw" style="background:#8d6e63"></i>furniture</span>
+  <span><i class="sw" style="border:2px solid #4a90e2"></i>dock</span>
+  <span><i class="sw" style="background:#333;border-radius:50%"></i>Brunhilda</span>
+  <span><i class="sw" style="background:#2196f3;border-radius:50%"></i>you</span>
+</p>
 
 <h2>What she knew</h2>
+<p class="muted">Only what is in the log: her dead-reckoned position, her trail over the last few ticks, the cells she has cleaned, where she last saw you (fading with age), and the ring she refuses to enter while a sighting is fresh. You are not drawn here unless she saw you.</p>
 <input id="scrub" type="range" min="0" max="0" value="0">
 <p class="muted">index <span id="at">0</span> · <span id="prov"></span> · <span id="knew"></span></p>
 <canvas id="past" width="480" height="320"></canvas>
@@ -41,12 +52,14 @@
   const live = $("live").getContext("2d"), past = $("past").getContext("2d");
   const scrub = $("scrub");
   let app, timer = null, pendingDir = -1;
-  const CELL = 40;
+  const CELL = 40, TRAIL_TICKS = 12;
+  const careful = () => $("policy").value === "1";
 
   function newGame() {
     if (timer) { clearInterval(timer); timer = null; $("run").textContent = "run"; }
-    app = new VacuumApp($("policy").value === "1", 6, 6);
+    app = new VacuumApp(careful(), 6, 6);
     scrub.dataset.follow = "true";
+    $("status").classList.remove("attack");
     render();
   }
 
@@ -55,7 +68,7 @@
     const attacked = app.frame(dir, $("dropout").checked, 100);
     scrub.dataset.follow = "true";
     render();
-    if (attacked) $("status").classList.add("attack"); else $("status").classList.remove("attack");
+    $("status").classList.toggle("attack", attacked);
   }
 
   document.addEventListener("keydown", (e) => {
@@ -76,44 +89,61 @@
   scrub.addEventListener("input", () => { scrub.dataset.follow = String(Number(scrub.value) === app.len()); renderPast(); });
 
   // ---- outputs: both canvases are functions of state; nothing is logged ----
-  function drawRoom(ctx) {
-    ctx.clearRect(0, 0, 480, 320);
-    ctx.fillStyle = "#fafafa"; ctx.fillRect(0, 0, 480, 320);
-    ctx.strokeStyle = "#eee";
-    for (let x = 0; x <= app.width(); x++) { ctx.beginPath(); ctx.moveTo(x * CELL, 0); ctx.lineTo(x * CELL, 320); ctx.stroke(); }
-    for (let y = 0; y <= app.height(); y++) { ctx.beginPath(); ctx.moveTo(0, y * CELL); ctx.lineTo(480, y * CELL); ctx.stroke(); }
+  const cx = (x) => x * CELL + CELL / 2, cy = (y) => y * CELL + CELL / 2;
+
+  function drawFloor(ctx, cleaned) {
+    ctx.fillStyle = "#e9e6df"; ctx.fillRect(0, 0, 480, 320);
+    ctx.fillStyle = "#bfe3c0";
+    for (let i = 0; i < cleaned.length; i += 2) ctx.fillRect(cleaned[i] * CELL, cleaned[i + 1] * CELL, CELL, CELL);
     const f = app.furniture();
     ctx.fillStyle = "#8d6e63";
-    for (let i = 0; i < f.length; i += 2) ctx.fillRect(f[i] * CELL + 2, f[i + 1] * CELL + 2, CELL - 4, CELL - 4);
+    for (let i = 0; i < f.length; i += 2) ctx.fillRect(f[i] * CELL, f[i + 1] * CELL, CELL, CELL);
+    ctx.strokeStyle = "rgba(0,0,0,.15)";
+    for (let x = 0; x <= app.width(); x++) { ctx.beginPath(); ctx.moveTo(x * CELL + .5, 0); ctx.lineTo(x * CELL + .5, 320); ctx.stroke(); }
+    for (let y = 0; y <= app.height(); y++) { ctx.beginPath(); ctx.moveTo(0, y * CELL + .5); ctx.lineTo(480, y * CELL + .5); ctx.stroke(); }
     const d = app.dock();
-    ctx.strokeStyle = "#4a90e2"; ctx.lineWidth = 2; ctx.strokeRect(d[0] * CELL + 4, d[1] * CELL + 4, CELL - 8, CELL - 8); ctx.lineWidth = 1;
+    ctx.strokeStyle = "#4a90e2"; ctx.lineWidth = 2; ctx.strokeRect(d[0] * CELL + 3, d[1] * CELL + 3, CELL - 6, CELL - 6); ctx.lineWidth = 1;
   }
-  function drawCleaned(ctx, cells) {
-    ctx.fillStyle = "rgba(76,175,80,.25)";
-    for (let i = 0; i < cells.length; i += 2) ctx.fillRect(cells[i] * CELL, cells[i + 1] * CELL, CELL, CELL);
+  function drawRing(ctx, x, y) {
+    ctx.strokeStyle = "rgba(211,47,47,.7)"; ctx.setLineDash([4, 3]); ctx.lineWidth = 2;
+    ctx.strokeRect((x - 1) * CELL + 2, (y - 1) * CELL + 2, 3 * CELL - 4, 3 * CELL - 4);
+    ctx.setLineDash([]); ctx.lineWidth = 1;
+  }
+  function drawTrail(ctx, n) {
+    // Her position at earlier indices, from the log. Cheap: each read
+    // resumes from the nearest checkpoint.
+    const pts = [];
+    let lastTicks = -1;
+    for (let k = n; k >= 0 && pts.length <= TRAIL_TICKS; k--) {
+      const s = app.snapshot(k);
+      if (s[9] !== lastTicks) { pts.push([s[0], s[1]]); lastTicks = s[9]; }
+    }
+    ctx.strokeStyle = "rgba(0,0,0,.35)"; ctx.lineWidth = 3; ctx.lineCap = "round"; ctx.lineJoin = "round";
+    ctx.beginPath();
+    pts.forEach(([x, y], i) => i ? ctx.lineTo(cx(x), cy(y)) : ctx.moveTo(cx(x), cy(y)));
+    ctx.stroke(); ctx.lineWidth = 1;
   }
   function drawHer(ctx, s) {
     const [x, y, heading, mode, , , , , attacking] = s;
     ctx.fillStyle = attacking ? "#d32f2f" : mode === 3 ? "#999" : "#333";
-    ctx.beginPath(); ctx.arc(x * CELL + CELL / 2, y * CELL + CELL / 2, CELL * .36, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(cx(x), cy(y), CELL * .34, 0, Math.PI * 2); ctx.fill();
     if (heading >= 0) {
       const [dx, dy] = [[0, -1], [1, 0], [0, 1], [-1, 0]][heading];
       ctx.strokeStyle = "#fff"; ctx.lineWidth = 3; ctx.beginPath();
-      ctx.moveTo(x * CELL + CELL / 2, y * CELL + CELL / 2);
-      ctx.lineTo(x * CELL + CELL / 2 + dx * CELL * .3, y * CELL + CELL / 2 + dy * CELL * .3); ctx.stroke(); ctx.lineWidth = 1;
+      ctx.moveTo(cx(x), cy(y)); ctx.lineTo(cx(x) + dx * CELL * .28, cy(y) + dy * CELL * .28); ctx.stroke(); ctx.lineWidth = 1;
     }
   }
   function drawHuman(ctx, x, y, alpha) {
     ctx.fillStyle = `rgba(33,150,243,${alpha})`;
-    ctx.beginPath(); ctx.arc(x * CELL + CELL / 2, y * CELL + CELL / 2, CELL * .3, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(cx(x), cy(y), CELL * .28, 0, Math.PI * 2); ctx.fill();
   }
 
   function render() {
     const n = app.len();
     const s = app.snapshot(n), t = app.truth();
-    drawRoom(live); drawCleaned(live, app.cleaned(n)); drawHer(live, s); drawHuman(live, t[0], t[1], 1);
+    drawFloor(live, app.cleaned(n)); drawHer(live, s); drawHuman(live, t[0], t[1], 1);
     const modes = ["idle", "cleaning", "docking", "stopped"];
-    $("status").textContent = `${modes[s[3]]} · cleaned ${s[7]} cells · bumps ${t[4]} · attacks ${t[2]}${t[3] ? " · motors latched" : ""} · ${n} events`;
+    $("status").textContent = `${modes[s[3]]} · cleaned ${s[7]} / ${app.free_count()} · bumps ${t[4]} · attacks ${t[2]}${t[3] ? " · motors latched" : ""} · ${n} events`;
     scrub.max = n;
     if (scrub.dataset.follow !== "false") scrub.value = n;
     renderPast();
@@ -121,7 +151,10 @@
   function renderPast() {
     const n = Number(scrub.value);
     const s = app.snapshot(n);
-    drawRoom(past); drawCleaned(past, app.cleaned(n)); drawHer(past, s);
+    drawFloor(past, app.cleaned(n));
+    if (s[4] >= 0 && s[6] === 0 && careful()) drawRing(past, s[4], s[5]);
+    drawTrail(past, n);
+    drawHer(past, s);
     if (s[4] >= 0) drawHuman(past, s[4], s[5], Math.max(.15, 1 - s[6] * .25));
     $("at").textContent = n;
     const ck = app.checkpoint_for(n);

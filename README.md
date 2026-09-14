@@ -50,6 +50,7 @@ shows which one the scrubber resumed from.
 - [x] Second host: Brunhilda. Time drives her, a heading is an *output* the sim reads every frame, an e-stop is a fire-and-forget *action* the host latches. Three fold-based expectations (never in the human's cell, frozen after e-stop, coverage monotone) plus dead-reckoning and attack-count agreement with the sim at frame boundaries.
 - [x] **Exit criterion met, twice.** The fuzzer breaks the naive policy (drives adjacent to you, you step into her path). It also broke the *careful* policy twice before it held: `Dock` after an e-stop resumed her brain while the host latch still held, and `Start` moved her before she had sensed anything, running over anyone standing by the dock.
 
+- [x] Brunhilda plans: nearest uncleaned cell by breadth-first search over the map she knows, docks when the job is done, waits when the only cells left are the ring around you. The sim keeps a host-side checkpoint so each frame costs the events since the last one.
 - [x] Brunhilda in the browser (`www/brunhilda.html`): you are the human, arrow keys move you, the lower canvas replays what she knew at any index. Switch the policy to *naive* and step in front of her.
 
 Next: the networked like button in the browser against a fake server; the timeout ambiguity (`Failed` then `Done`) and a resync effect.

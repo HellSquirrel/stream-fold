@@ -99,6 +99,10 @@ impl VacuumApp {
         vec![self.sim.room.dock.x, self.sim.room.dock.y]
     }
 
+    pub fn free_count(&self) -> i32 {
+        self.sim.room.free_cells().count() as i32
+    }
+
     // ---- inputs: each one appends events ----
 
     pub fn start(&mut self) {

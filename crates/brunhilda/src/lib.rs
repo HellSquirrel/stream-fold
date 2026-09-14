@@ -43,6 +43,9 @@ pub const H: i32 = 8;
 pub const RELIABLE_RANGE: i32 = 2;
 /// Sightings out to this distance are reported unless dropped.
 pub const FLAKY_RANGE: i32 = 4;
+/// After giving up on cells you are standing in, she waits at the dock
+/// this many ticks before trying again.
+pub const RETRY_TICKS: u64 = 40;
 
 // ---------- domain ----------
 
@@ -176,6 +179,60 @@ impl Room {
     pub fn free(&self, c: Cell) -> bool {
         c.in_bounds() && !self.furniture.contains(&c)
     }
+
+    /// Every free cell in the room.
+    pub fn free_cells(&self) -> impl Iterator<Item = Cell> + '_ {
+        (0..W)
+            .flat_map(|x| (0..H).map(move |y| Cell::new(x, y)))
+            .filter(|c| self.free(*c))
+    }
+
+    /// Breadth-first distance from the nearest of `sources`, over free
+    /// cells that also satisfy `passable`, with 4-neighbour moves.
+    /// Unreachable cells get `None`.
+    pub fn distances(
+        &self,
+        sources: impl IntoIterator<Item = Cell>,
+        passable: impl Fn(Cell) -> bool,
+    ) -> DistMap {
+        let ok = |c: Cell| self.free(c) && passable(c);
+        let mut d = DistMap([None; (W * H) as usize]);
+        let mut queue = std::collections::VecDeque::new();
+        for c in sources {
+            if ok(c) && d.get(c).is_none() {
+                d.set(c, 0);
+                queue.push_back(c);
+            }
+        }
+        while let Some(c) = queue.pop_front() {
+            let n = d.get(c).unwrap_or(0) + 1;
+            for dir in Dir::ALL {
+                let t = c.step(dir);
+                if ok(t) && d.get(t).is_none() {
+                    d.set(t, n);
+                    queue.push_back(t);
+                }
+            }
+        }
+        d
+    }
+}
+
+/// Distances over the grid, from [`Room::distances`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DistMap([Option<u16>; (W * H) as usize]);
+
+impl DistMap {
+    pub fn get(&self, c: Cell) -> Option<u16> {
+        if c.in_bounds() {
+            self.0[(c.x * H + c.y) as usize]
+        } else {
+            None
+        }
+    }
+    fn set(&mut self, c: Cell, v: u16) {
+        self.0[(c.x * H + c.y) as usize] = Some(v);
+    }
 }
 
 // ---------- her brain ----------
@@ -204,6 +261,12 @@ pub struct Brain {
     pub cleaned: BTreeSet<Cell>,
     pub sighting: Option<Sighting>,
     pub ticks: u64,
+    /// Bumps so far. The naive policy's only source of variety.
+    pub bumps: u64,
+    /// She gave up on the cells around this sighting at this tick, and is
+    /// waiting at the dock. Cleared when you are seen somewhere else or
+    /// after `RETRY_TICKS`.
+    pub blocked: Option<(Cell, u64)>,
     /// A `Bump` arrived since the last tick.
     bumped: bool,
     /// A sighting arrived since the last tick.
@@ -219,6 +282,8 @@ impl Brain {
             cleaned: BTreeSet::new(),
             sighting: None,
             ticks: 0,
+            bumps: 0,
+            blocked: None,
             bumped: false,
             seen: None,
         }
@@ -226,6 +291,12 @@ impl Brain {
 
     pub fn moving(&self) -> bool {
         matches!(self.mode, Mode::Cleaning | Mode::Docking)
+    }
+
+    /// Cells she remembers giving up on: the ring around the sighting
+    /// that blocked her.
+    pub fn kept_out(&self, c: Cell) -> bool {
+        matches!(self.blocked, Some((at, _)) if c.dist(at) <= 1)
     }
 
     /// The set of effects she wants in flight. An e-stop, once, per stop.
@@ -240,11 +311,16 @@ impl Brain {
     }
 }
 
-/// How she picks her next heading. `Naive` is the controller you would
-/// write first; the fuzzer breaks it. `Careful` survives.
+/// Two vacuums. `Naive` has no map: it drives until it bumps, turns
+/// clockwise, and only refuses the one cell it last saw you in. The
+/// fuzzer breaks it. `Careful` knows the room, plans the nearest uncleaned
+/// cell by breadth-first search, treats the ring around a fresh sighting
+/// as wall, and goes back to the dock to wait when that ring holds the
+/// only cells left. It survives.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Policy {
-    /// Won't drive into the cell the human was last seen in. That's all.
+    /// No map. Bump and turn. Won't drive into the cell the human was
+    /// last seen in. That's all.
     Naive,
     /// Won't drive into any cell the human could step into this frame:
     /// anything within Chebyshev 1 of a fresh sighting. And won't move at
@@ -253,7 +329,8 @@ pub enum Policy {
 }
 
 impl Policy {
-    fn forbidden(self, target: Cell, sighting: Option<Sighting>) -> bool {
+    /// Would this policy refuse to drive into `target` given the last sighting?
+    pub fn forbidden(self, target: Cell, sighting: Option<Sighting>) -> bool {
         match (self, sighting) {
             (_, None) => false,
             (Policy::Naive, Some(s)) => s.age == 0 && target == s.at,
@@ -265,26 +342,82 @@ impl Policy {
         if !b.moving() {
             return None;
         }
-        // No sighting after a tick means nobody is within reliable range.
-        // No sighting before the first tick means nothing at all: look first.
-        if self == Policy::Careful && b.ticks == 0 {
-            return None;
+        match self {
+            Policy::Naive => self.wander(b),
+            Policy::Careful => self.plan(room, b),
         }
-        let mut order: Vec<Dir> = Vec::with_capacity(4);
+    }
+
+    /// No map. Keep going; after a bump, turn left or right (never
+    /// straight back), and every so often turn anyway. Which way is a
+    /// hash of her own tick and bump counts: pseudo-random to the eye,
+    /// but a pure function of the log, so replay is exact.
+    fn wander(self, b: &Brain) -> Option<Dir> {
+        let noise = (b.ticks.wrapping_mul(0x9E37_79B9_7F4A_7C15)
+            ^ b.bumps.wrapping_mul(0xC2B2_AE3D_27D4_EB4F))
+            >> 17;
+        let turn = |d: Dir, k: u64| (0..k % 4).fold(d, |d, _| d.clockwise());
         let mut d = b.heading.unwrap_or(Dir::E);
         if b.bumped {
-            d = d.clockwise();
+            d = turn(d, if noise & 1 == 0 { 1 } else { 3 });
+        } else if b.ticks > 0 && noise.is_multiple_of(7) {
+            d = turn(d, 1 + noise / 8 % 3);
         }
-        for _ in 0..4 {
-            order.push(d);
-            d = d.clockwise();
+        (0..4)
+            .map(|_| {
+                let cur = d;
+                d = d.clockwise();
+                cur
+            })
+            .find(|d| !self.forbidden(b.pos.step(*d), b.sighting))
+    }
+
+    /// With a map: breadth-first search to the nearest goal, treating the
+    /// ring around a fresh sighting as wall. Goals: uncleaned cells while
+    /// cleaning, else the dock. If no uncleaned cell is reachable, the
+    /// dock is the goal too: she goes home and waits for you to move.
+    fn plan(self, room: &Room, b: &Brain) -> Option<Dir> {
+        // No sighting after a tick means nobody is within reliable range.
+        // No sighting before the first tick means nothing at all: look first.
+        if b.ticks == 0 {
+            return None;
         }
-        if b.mode == Mode::Docking {
-            order.sort_by_key(|d| b.pos.step(*d).manhattan(room.dock));
+        // Wall: the ring around a fresh sighting, plus the ring she
+        // remembers giving up on.
+        let passable = |c: Cell| !self.forbidden(c, b.sighting) && !b.kept_out(c);
+        let to_dock = || room.distances([room.dock], passable);
+        let goal = match b.mode {
+            Mode::Docking => to_dock(),
+            _ if b.blocked.is_some() => to_dock(),
+            _ => {
+                // Her own cell is cleaned on this tick regardless; not a goal.
+                let work = room.distances(
+                    room.free_cells()
+                        .filter(|c| !b.cleaned.contains(c) && *c != b.pos),
+                    passable,
+                );
+                if work.get(b.pos).is_some() {
+                    work
+                } else {
+                    to_dock()
+                }
+            }
+        };
+        if goal.get(b.pos) == Some(0) {
+            return None; // already there
         }
-        order
-            .into_iter()
-            .find(|d| room.free(b.pos.step(*d)) && !self.forbidden(b.pos.step(*d), b.sighting))
+        // Candidate order: keep heading, then clockwise, so ties don't zigzag.
+        let mut d = b.heading.unwrap_or(Dir::E);
+        (0..4)
+            .map(|_| {
+                let cur = d;
+                d = d.clockwise();
+                cur
+            })
+            .filter(|d| room.free(b.pos.step(*d)) && passable(b.pos.step(*d)))
+            .filter_map(|d| goal.get(b.pos.step(d)).map(|dist| (dist, d)))
+            .min_by_key(|(dist, _)| *dist)
+            .map(|(_, d)| d)
     }
 }
 
@@ -325,6 +458,33 @@ pub fn step(room: &Room, policy: Policy, mut b: Brain, index: Index, ev: &Ev) ->
             };
             if b.mode == Mode::Cleaning {
                 b.cleaned.insert(b.pos);
+                if room.free_cells().all(|c| b.cleaned.contains(&c)) {
+                    b.mode = Mode::Docking; // job done
+                }
+            }
+            if policy == Policy::Careful {
+                b.blocked = match (b.blocked, b.sighting) {
+                    // you were seen somewhere else: the way may be clear
+                    (Some((at, _)), Some(s)) if s.age == 0 && s.at.dist(at) > 1 => None,
+                    // waited long enough: try again
+                    (Some((_, since)), _) if b.ticks + 1 - since > RETRY_TICKS => None,
+                    (Some(bl), _) => Some(bl),
+                    // nothing left to clean except the ring around you: give up for now
+                    (None, Some(s)) if s.age == 0 && b.mode == Mode::Cleaning => {
+                        let passable = |c: Cell| !policy.forbidden(c, b.sighting);
+                        let work = room.distances(
+                            room.free_cells()
+                                .filter(|c| !b.cleaned.contains(c) && *c != b.pos),
+                            passable,
+                        );
+                        if work.get(b.pos).is_none() {
+                            Some((s.at, b.ticks + 1))
+                        } else {
+                            None
+                        }
+                    }
+                    (None, _) => None,
+                };
             }
             if b.mode == Mode::Docking && b.pos == room.dock {
                 b.mode = Mode::Idle;
@@ -410,31 +570,64 @@ mod tests {
         assert_eq!(b.run(log.prefix(2)).pos, Cell::new(1, 0));
         let after_bump = b.run(log.view());
         assert_eq!(after_bump.pos, Cell::new(1, 0), "bump: no move");
-        assert_eq!(after_bump.heading, Some(Dir::S), "bump: turned clockwise");
         checkpoint_law(&b, log.view()).unwrap();
     }
 
     #[test]
-    fn naive_drives_next_to_you_careful_does_not() {
-        let log: Log<Ev> = [
-            events::cmd(Cmd::Start),
-            events::human(Cell::new(3, 0)), // two cells east of her at (1,0) after this frame
-            events::tick(16),
-        ]
-        .into_iter()
-        .collect();
-        let naive = brain(Room::default(), Policy::Naive).run(log.view());
-        let careful = brain(Room::default(), Policy::Careful).run(log.view());
-        assert_eq!(naive.pos, Cell::new(1, 0));
+    fn naive_has_no_map_and_bumps_its_way_around() {
+        use crate::sim::{Frame, Sim};
+        let room = Room::default();
+        let b = brain(room.clone(), Policy::Naive);
+        let mut sim = Sim::new(room, Cell::new(11, 7));
+        let mut log = Log::new();
+        sim.command(&mut log, &b, Cmd::Start);
+        for _ in 0..40 {
+            sim.frame(
+                &mut log,
+                &b,
+                Frame {
+                    human: None,
+                    dropout: false,
+                    dt: 100,
+                },
+            );
+        }
+        assert!(sim.bumps > 0, "she should have hit the east wall by now");
         assert_eq!(
-            naive.heading,
-            Some(Dir::E),
+            b.run(log.view()).pos,
+            sim.her,
+            "and still know where she is"
+        );
+    }
+
+    #[test]
+    fn naive_drives_next_to_you_careful_does_not() {
+        // You were just seen two cells east of her; the cell between you is
+        // one you could step into this frame.
+        let seen = Some(Sighting {
+            at: Cell::new(3, 0),
+            age: 0,
+        });
+        let between = Cell::new(2, 0);
+        assert!(
+            !Policy::Naive.forbidden(between, seen),
             "naive: happy to drive to (2,0)"
         );
-        assert_ne!(
-            careful.heading,
-            Some(Dir::E),
-            "careful: (2,0) is within reach of the human"
+        assert!(
+            Policy::Careful.forbidden(between, seen),
+            "careful: (2,0) is within your reach"
+        );
+        assert!(
+            Policy::Naive.forbidden(Cell::new(3, 0), seen),
+            "naive: but not into you"
+        );
+        let stale = Some(Sighting {
+            at: Cell::new(3, 0),
+            age: 1,
+        });
+        assert!(
+            !Policy::Careful.forbidden(between, stale),
+            "careful: a stale sighting is no wall"
         );
     }
 
@@ -452,5 +645,64 @@ mod tests {
         assert_eq!(s.heading, None);
         assert_eq!(s.desired_effects().len(), 1);
         assert_eq!(s.mode, Mode::Stopped { since: 2 });
+    }
+
+    #[test]
+    fn covers_the_room_then_docks() {
+        use crate::sim::{Frame, Sim};
+        let room = Room::default();
+        let b = brain(room.clone(), Policy::Careful);
+        // Park the human in the far corner; she must clean everything
+        // she can reach without coming within one cell of him.
+        let human = Cell::new(11, 7);
+        let mut sim = Sim::new(room.clone(), human);
+        let mut log = Log::new();
+        sim.command(&mut log, &b, Cmd::Start);
+        let mut frames_at_dock_after_plateau = 0;
+        for i in 0..400 {
+            sim.frame(
+                &mut log,
+                &b,
+                Frame {
+                    human: None,
+                    dropout: false,
+                    dt: 100,
+                },
+            );
+            if i >= 200 && sim.her == room.dock {
+                frames_at_dock_after_plateau += 1;
+            }
+        }
+        let s = b.run(log.view());
+        let expected: BTreeSet<Cell> = room.free_cells().filter(|c| c.dist(human) > 1).collect();
+        let missing: Vec<Cell> = expected.difference(&s.cleaned).copied().collect();
+        assert!(missing.is_empty(), "uncleaned: {missing:?}");
+        assert_eq!(sim.attacks, 0);
+        assert!(
+            frames_at_dock_after_plateau > 100,
+            "blocked: should mostly wait at the dock, was there {frames_at_dock_after_plateau}/200 frames"
+        );
+        // Now move the human away from both the corner and the dock and let
+        // her finish: the job completes and she docks.
+        sim.human = Cell::new(6, 7);
+        let mut moved = sim.clone();
+        for _ in 0..200 {
+            moved.frame(
+                &mut log,
+                &b,
+                Frame {
+                    human: None,
+                    dropout: false,
+                    dt: 100,
+                },
+            );
+        }
+        let s = b.run(log.view());
+        assert_eq!(
+            s.cleaned.len(),
+            room.free_cells().count(),
+            "everything cleaned"
+        );
+        assert_eq!((s.mode, s.pos), (Mode::Idle, room.dock), "docked and idle");
     }
 }

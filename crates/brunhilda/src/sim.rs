@@ -1,0 +1,112 @@
+//! The room as a host. It appends inputs and senses to the log, reads her
+//! heading as an output, and honours her e-stop as a latch. It is the only
+//! thing in this crate that knows where the human really is.
+
+use std::collections::BTreeSet;
+
+use logfold_core::{Fold, Log, diff_effects, in_flight};
+
+use crate::{Brain, Cell, Cmd, Dir, Effect, Ev, KEY, Room, Vacuum, events};
+
+#[derive(Clone, Debug)]
+pub struct Sim {
+    pub room: Room,
+    pub human: Cell,
+    pub her: Cell,
+    /// Motors killed by an e-stop. Cleared by `Start`.
+    pub latched: bool,
+    pub attacks: u32,
+    pub bumps: u32,
+    pub ms: u64,
+}
+
+/// What the human tries to do in a frame, and what the world does to her senses.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Frame {
+    pub human: Option<Dir>,
+    /// Drop a sighting that is beyond the reliable range.
+    pub dropout: bool,
+    /// Milliseconds this frame took.
+    pub dt: u64,
+}
+
+impl Sim {
+    pub fn new(room: Room, human: Cell) -> Self {
+        let her = room.dock;
+        Self {
+            room,
+            human,
+            her,
+            latched: false,
+            attacks: 0,
+            bumps: 0,
+            ms: 0,
+        }
+    }
+
+    /// A command from the owner. Appends the input, then lets the host act.
+    pub fn command(&mut self, log: &mut Log<Ev>, brain: &Fold<'_, Ev, Brain>, cmd: Cmd) {
+        log.append(events::cmd(cmd));
+        if cmd == Cmd::Start {
+            self.latched = false;
+        }
+        self.host_acts(log, brain);
+    }
+
+    /// One frame: human moves, she moves, the world reports, time ticks,
+    /// the host acts. Returns true if she ended the frame in the human's cell.
+    pub fn frame(&mut self, log: &mut Log<Ev>, brain: &Fold<'_, Ev, Brain>, f: Frame) -> bool {
+        // 1. the human moves, never onto her.
+        if let Some(d) = f.human {
+            let t = self.human.step(d);
+            if self.room.free(t) && t != self.her {
+                self.human = t;
+            }
+        }
+        // 2. she moves along her setpoint, unless latched.
+        let mut bumped = false;
+        let mut attacked = false;
+        if !self.latched
+            && let Some(d) = brain.run(log.view()).heading
+        {
+            let t = self.her.step(d);
+            if self.room.free(t) {
+                self.her = t;
+                if self.her == self.human {
+                    attacked = true;
+                    self.attacks += 1;
+                }
+            } else {
+                bumped = true;
+                self.bumps += 1;
+            }
+        }
+        // 3. the world reports.
+        if bumped {
+            log.append(events::bump());
+        }
+        let dist = self.her.dist(self.human);
+        if dist <= crate::RELIABLE_RANGE || (dist <= crate::FLAKY_RANGE && !f.dropout) {
+            log.append(events::human(self.human));
+        }
+        // 4. time.
+        self.ms += f.dt;
+        log.append(events::tick(self.ms));
+        // 5. the host.
+        self.host_acts(log, brain);
+        attacked
+    }
+
+    /// Start whatever she desires that has not been started. An e-stop
+    /// becomes a latch the moment it is recorded.
+    pub fn host_acts(&mut self, log: &mut Log<Ev>, brain: &Fold<'_, Ev, Brain>) {
+        let v = log.view();
+        let desired: BTreeSet<Effect> = brain.run(v).desired_effects();
+        let d = diff_effects(&desired, &in_flight::<Vacuum>().run(v));
+        for fx in d.start {
+            let req = log.len() as u64;
+            log.append(Ev::started(KEY, req, fx));
+            self.latched = true;
+        }
+    }
+}

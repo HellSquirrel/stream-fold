@@ -1,0 +1,12 @@
+[package]
+name = "brunhilda"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+description = "A robot vacuum cleaner as a fold, a simulated room as a host, and a fuzzer that plays the human she keeps attacking."
+
+[dependencies]
+logfold-core = { path = "../logfold-core" }
+
+[dev-dependencies]
+proptest.workspace = true

@@ -1,22 +1,28 @@
-//! Append-only log and read-only views.
+//! Append-only log and read-only views, generic over the event type.
 //!
 //! A plain `Vec` on purpose. Persistent vectors and shards (proposal §4.9)
 //! arrive when a measurement says they are needed.
 
-use crate::event::{Event, Index};
+use crate::event::{Domain, Event, Index};
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Log {
-    events: Vec<Event>,
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Log<E> {
+    events: Vec<E>,
 }
 
-impl Log {
+impl<E> Default for Log<E> {
+    fn default() -> Self {
+        Self { events: Vec::new() }
+    }
+}
+
+impl<E> Log<E> {
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Append one event and return its index.
-    pub fn append(&mut self, ev: Event) -> Index {
+    pub fn append(&mut self, ev: E) -> Index {
         self.events.push(ev);
         (self.events.len() - 1) as Index
     }
@@ -30,7 +36,7 @@ impl Log {
     }
 
     /// The whole log as a view.
-    pub fn view(&self) -> LogView<'_> {
+    pub fn view(&self) -> LogView<'_, E> {
         LogView {
             events: &self.events,
             base: 0,
@@ -38,15 +44,17 @@ impl Log {
     }
 
     /// Events with absolute index `< n`. `n` is clamped to the log length.
-    pub fn prefix(&self, n: usize) -> LogView<'_> {
+    pub fn prefix(&self, n: usize) -> LogView<'_, E> {
         self.view().prefix(n)
     }
+}
 
+impl<D: Domain> Log<Event<D>> {
     /// Only the pure events, re-indexed from zero. This is the seed for
     /// re-execution: feed it to a live host and the world answers afresh.
     /// Request ids in the result will differ from the original, because
     /// they derive from indices.
-    pub fn inputs(&self) -> Log {
+    pub fn inputs(&self) -> Log<Event<D>> {
         self.events
             .iter()
             .filter(|e| e.is_pure())
@@ -55,8 +63,8 @@ impl Log {
     }
 }
 
-impl FromIterator<Event> for Log {
-    fn from_iter<I: IntoIterator<Item = Event>>(iter: I) -> Self {
+impl<E> FromIterator<E> for Log<E> {
+    fn from_iter<I: IntoIterator<Item = E>>(iter: I) -> Self {
         Self {
             events: iter.into_iter().collect(),
         }
@@ -66,13 +74,20 @@ impl FromIterator<Event> for Log {
 /// An immutable window onto the log covering absolute indices
 /// `[base, base + len)`. Events keep their absolute indices, so a view of
 /// the tail folds exactly like the same events inside the whole log.
-#[derive(Clone, Copy, Debug)]
-pub struct LogView<'a> {
-    events: &'a [Event],
+#[derive(Debug)]
+pub struct LogView<'a, E> {
+    events: &'a [E],
     base: usize,
 }
 
-impl<'a> LogView<'a> {
+impl<E> Clone for LogView<'_, E> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<E> Copy for LogView<'_, E> {}
+
+impl<'a, E> LogView<'a, E> {
     pub fn len(&self) -> usize {
         self.events.len()
     }
@@ -92,7 +107,7 @@ impl<'a> LogView<'a> {
     }
 
     /// Events with absolute index in `[from, to)`, clamped to this view.
-    pub fn slice(&self, from: usize, to: usize) -> LogView<'a> {
+    pub fn slice(&self, from: usize, to: usize) -> LogView<'a, E> {
         let from = from.clamp(self.base, self.end());
         let to = to.clamp(from, self.end());
         LogView {
@@ -102,22 +117,27 @@ impl<'a> LogView<'a> {
     }
 
     /// Events with absolute index `< n`.
-    pub fn prefix(&self, n: usize) -> LogView<'a> {
+    pub fn prefix(&self, n: usize) -> LogView<'a, E> {
         self.slice(self.base, n)
     }
 
     /// Events with absolute index `>= from`.
-    pub fn suffix(&self, from: usize) -> LogView<'a> {
+    pub fn suffix(&self, from: usize) -> LogView<'a, E> {
         self.slice(from, self.end())
     }
 
     /// Events with their absolute indices, oldest first.
-    pub fn iter(&self) -> impl DoubleEndedIterator<Item = (Index, &'a Event)> + use<'a> {
+    pub fn iter(&self) -> impl DoubleEndedIterator<Item = (Index, &'a E)> + use<'a, E> {
         let base = self.base;
         self.events
             .iter()
             .enumerate()
             .map(move |(i, e)| ((base + i) as Index, e))
+    }
+
+    /// The event at absolute index `i`, if it is inside this view.
+    pub fn get(&self, i: usize) -> Option<&'a E> {
+        i.checked_sub(self.base).and_then(|k| self.events.get(k))
     }
 
     /// Absolute index of the most recent event, if any.
@@ -126,27 +146,37 @@ impl<'a> LogView<'a> {
     }
 
     /// The most recent event, if any.
-    pub fn last(&self) -> Option<(Index, &'a Event)> {
+    pub fn last(&self) -> Option<(Index, &'a E)> {
         self.iter().next_back()
     }
+}
 
+impl<D: Domain> LogView<'_, Event<D>> {
     /// Virtual "now": the most recent `Tick`, or 0 before any tick.
     pub fn now(&self) -> u64 {
-        crate::fold::now().run(*self)
+        crate::fold::now::<D>().run(*self)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::effect::{Effect, IdemKey};
-    use crate::event::IoResult;
+    use crate::event::{IoResult, Never};
+
+    #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+    struct T;
+    impl Domain for T {
+        type Input = ();
+        type Sense = ();
+        type Effect = Never;
+    }
+    type Ev = Event<T>;
 
     #[test]
     fn prefix_clamps_and_indexes_from_zero() {
         let mut log = Log::new();
-        assert_eq!(log.append(Event::tick(1)), 0);
-        assert_eq!(log.append(Event::tick(2)), 1);
+        assert_eq!(log.append(Ev::tick(1)), 0);
+        assert_eq!(log.append(Ev::tick(2)), 1);
         assert_eq!(log.prefix(99).len(), 2);
         assert_eq!(log.prefix(0).now(), 0);
         assert_eq!(log.prefix(1).now(), 1);
@@ -157,13 +187,14 @@ mod tests {
 
     #[test]
     fn slices_keep_absolute_indices() {
-        let log: Log = (0..5).map(Event::tick).collect();
+        let log: Log<Ev> = (0..5).map(Ev::tick).collect();
         let tail = log.view().suffix(3);
         assert_eq!(tail.base(), 3);
         assert_eq!(tail.end(), 5);
         assert_eq!(tail.iter().map(|(i, _)| i).collect::<Vec<_>>(), vec![3, 4]);
         assert_eq!(tail.last_index(), Some(4));
-        // prefix of a suffix, and clamping in both directions
+        assert_eq!(tail.get(3), Some(&Ev::tick(3)));
+        assert_eq!(tail.get(2), None);
         assert_eq!(
             tail.prefix(4).iter().map(|(i, _)| i).collect::<Vec<_>>(),
             vec![3]
@@ -176,26 +207,11 @@ mod tests {
 
     #[test]
     fn inputs_keeps_only_pure_events() {
-        let key = || "k".to_string();
-        let log: Log = [
-            Event::click(key()),
-            Event::Started {
-                key: key(),
-                req: 0,
-                effect: Effect::Ping {
-                    key: key(),
-                    idem: IdemKey {
-                        scope: key(),
-                        index: 0,
-                    },
-                },
-            },
-            Event::tick(16),
-            Event::Io {
-                key: key(),
-                req: 0,
-                res: IoResult::Done,
-            },
+        let log: Log<Ev> = [
+            Ev::input("k", ()),
+            Ev::sense("k", ()),
+            Ev::tick(16),
+            Ev::io("k", 0, IoResult::Done),
         ]
         .into_iter()
         .collect();

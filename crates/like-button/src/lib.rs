@@ -24,7 +24,43 @@
 
 use std::collections::BTreeSet;
 
-use logfold_core::{Effect, Event, Fold, IdemKey, Index, IoResult, Key, Pure, ReqId, UiEvent};
+use logfold_core::{Action, Domain, Event, Fold, IdemKey, Index, IoResult, Key, Never, ReqId};
+
+/// The domain: a click in, a `Post` out, nothing unsolicited from the world.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct LikeButton;
+
+impl Domain for LikeButton {
+    type Input = Click;
+    type Sense = Never;
+    type Effect = Effect;
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Click;
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Effect {
+    /// Ask the server to store `intent`. Answered by an `Io`.
+    Post {
+        req: ReqId,
+        intent: bool,
+        idem: IdemKey,
+    },
+    /// Fire-and-forget; here only to exercise the result-less path.
+    Ping { idem: IdemKey },
+}
+
+impl Action for Effect {
+    fn req(&self) -> Option<ReqId> {
+        match self {
+            Effect::Post { req, .. } => Some(*req),
+            Effect::Ping { .. } => None,
+        }
+    }
+}
+
+pub type Ev = Event<LikeButton>;
 
 /// The one post this example cares about.
 pub const POST: &str = "post:42";
@@ -61,22 +97,15 @@ impl View {
 }
 
 /// Is this event addressed to our post? The fold's declared scope.
-pub fn in_scope(ev: &Event) -> bool {
-    match ev {
-        Event::Pure(Pure::Ui { key, .. }) | Event::Io { key, .. } | Event::Started { key, .. } => {
-            key == POST
-        }
-        Event::Pure(Pure::Tick { .. }) => false,
-    }
+pub fn in_scope(ev: &Ev) -> bool {
+    ev.key() == Some(POST)
 }
 
 /// One step of the like button. Public so expectations can look at the
 /// state *before* an event without re-running the fold.
-pub fn step(mut v: View, index: Index, ev: &Event) -> View {
+pub fn step(mut v: View, index: Index, ev: &Ev) -> View {
     match ev {
-        Event::Pure(Pure::Ui {
-            ev: UiEvent::Click, ..
-        }) => {
+        Event::Input { input: Click, .. } => {
             v.liked = !v.liked;
             v.wanted_since = index;
         }
@@ -104,7 +133,7 @@ pub fn step(mut v: View, index: Index, ev: &Event) -> View {
 }
 
 /// The like button as a fold, scoped to its post.
-pub fn like_button() -> Fold<'static, View> {
+pub fn like_button() -> Fold<'static, Ev, View> {
     Fold::new(View::default(), step).scoped(in_scope)
 }
 
@@ -115,19 +144,15 @@ pub fn desired_effects(v: &View) -> BTreeSet<Effect> {
     if v.dirty() && v.pending.is_none() {
         out.insert(Effect::Post {
             req: v.wanted_since,
-            key: key(),
             intent: v.liked,
-            idem: IdemKey {
-                scope: key(),
-                index: v.wanted_since,
-            },
+            idem: IdemKey::new(key(), v.wanted_since),
         });
     }
     out
 }
 
 /// Derived projection: desired effects as a fold.
-pub fn desired() -> Fold<'static, View, BTreeSet<Effect>> {
+pub fn desired() -> Fold<'static, Ev, View, BTreeSet<Effect>> {
     like_button().map(desired_effects)
 }
 
@@ -135,34 +160,22 @@ pub fn desired() -> Fold<'static, View, BTreeSet<Effect>> {
 pub mod events {
     use super::*;
 
-    pub fn click() -> Event {
-        Event::click(key())
+    pub fn click() -> Ev {
+        Ev::input(key(), Click)
     }
-    /// Host bookkeeping: `effect` was started for `req`.
-    pub fn started(effect: Effect) -> Event {
+    /// Host bookkeeping: `effect` was started.
+    pub fn started(effect: Effect) -> Ev {
         let req = effect.req().expect("like-button effects expect a result");
-        Event::Started {
-            key: key(),
-            req,
-            effect,
-        }
+        Ev::started(key(), req, effect)
     }
-    pub fn done(req: ReqId) -> Event {
-        Event::Io {
-            key: key(),
-            req,
-            res: IoResult::Done,
-        }
+    pub fn done(req: ReqId) -> Ev {
+        Ev::io(key(), req, IoResult::Done)
     }
-    pub fn failed(req: ReqId) -> Event {
-        Event::Io {
-            key: key(),
-            req,
-            res: IoResult::Failed,
-        }
+    pub fn failed(req: ReqId) -> Ev {
+        Ev::io(key(), req, IoResult::Failed)
     }
-    pub fn tick(ms: u64) -> Event {
-        Event::tick(ms)
+    pub fn tick(ms: u64) -> Ev {
+        Ev::tick(ms)
     }
 }
 
@@ -172,7 +185,7 @@ mod tests {
     use logfold_core::{Log, checkpoint_law};
 
     /// An honest host: start whatever is desired right now.
-    fn host(log: &mut Log) {
+    fn host(log: &mut Log<Ev>) {
         for fx in desired().run(log.view()) {
             log.append(events::started(fx));
         }
@@ -180,7 +193,7 @@ mod tests {
 
     #[test]
     fn empty_log_is_not_liked_and_idle() {
-        let log = Log::new();
+        let log = Log::<Ev>::new();
         assert_eq!(like_button().run(log.view()), View::default());
         assert!(desired().run(log.view()).is_empty());
     }
@@ -224,7 +237,7 @@ mod tests {
 
     #[test]
     fn other_posts_are_out_of_scope() {
-        let log: Log = [Event::click("post:7"), events::click()]
+        let log: Log<Ev> = [Ev::input("post:7", Click), events::click()]
             .into_iter()
             .collect();
         let v = like_button().run(log.view());

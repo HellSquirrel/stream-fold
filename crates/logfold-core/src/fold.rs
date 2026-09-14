@@ -7,6 +7,9 @@
 //! (proposal §3.2), and [`Fold::from`] is a checkpoint: the same fold
 //! starting from a saved state at a saved index.
 //!
+//! Folds are generic over the event type `E`; the runtime folds in this
+//! module ([`now`], [`in_flight`]) are for [`Event<D>`].
+//!
 //! The left-fold law makes checkpoints honest: for any fold `f`, any log
 //! and any split `k`, `f.from(f.state(prefix k), k).run(log) == f.run(log)`.
 //! [`checkpoint_law`] checks it for a given fold and log.
@@ -14,25 +17,24 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
-use crate::effect::Effect;
-use crate::event::{Event, Index, Pure};
+use crate::event::{Action, Domain, Event, Index};
 use crate::log::LogView;
 
-type Step<'a, X> = Rc<dyn Fn(X, Index, &Event) -> X + 'a>;
+type Step<'a, E, X> = Rc<dyn Fn(X, Index, &E) -> X + 'a>;
 type Done<'a, X, S> = Rc<dyn Fn(&X) -> S + 'a>;
 
-/// A left fold over the log with internal state `X` and output `S`.
+/// A left fold over events `E` with internal state `X` and output `S`.
 ///
 /// `S` defaults to `X`: a plain fold's output is its state.
-pub struct Fold<'a, X, S = X> {
+pub struct Fold<'a, E, X, S = X> {
     init: X,
-    step: Step<'a, X>,
+    step: Step<'a, E, X>,
     done: Done<'a, X, S>,
     /// Absolute index this fold starts at. Zero unless resumed via [`Fold::from`].
     skip: usize,
 }
 
-impl<X: Clone, S> Clone for Fold<'_, X, S> {
+impl<E, X: Clone, S> Clone for Fold<'_, E, X, S> {
     fn clone(&self) -> Self {
         Fold {
             init: self.init.clone(),
@@ -43,9 +45,9 @@ impl<X: Clone, S> Clone for Fold<'_, X, S> {
     }
 }
 
-impl<'a, X: Clone + 'a> Fold<'a, X> {
+impl<'a, E: 'a, X: Clone + 'a> Fold<'a, E, X> {
     /// A fold whose output is its state.
-    pub fn new(init: X, step: impl Fn(X, Index, &Event) -> X + 'a) -> Self {
+    pub fn new(init: X, step: impl Fn(X, Index, &E) -> X + 'a) -> Self {
         Fold {
             init,
             step: Rc::new(step),
@@ -55,9 +57,9 @@ impl<'a, X: Clone + 'a> Fold<'a, X> {
     }
 }
 
-impl<'a, X: Clone + 'a, S: 'a> Fold<'a, X, S> {
+impl<'a, E: 'a, X: Clone + 'a, S: 'a> Fold<'a, E, X, S> {
     /// One step of the underlying state machine.
-    pub fn step(&self, x: X, index: Index, ev: &Event) -> X {
+    pub fn step(&self, x: X, index: Index, ev: &E) -> X {
         (self.step)(x, index, ev)
     }
 
@@ -77,21 +79,24 @@ impl<'a, X: Clone + 'a, S: 'a> Fold<'a, X, S> {
     }
 
     /// Fold the view (from `skip` onward) and return the final internal state.
-    pub fn state(&self, log: LogView<'_>) -> X {
+    pub fn state(&self, log: LogView<'_, E>) -> X {
         log.suffix(self.skip)
             .iter()
             .fold(self.init.clone(), |x, (i, e)| (self.step)(x, i, e))
     }
 
     /// Fold the view and return the output.
-    pub fn run(&self, log: LogView<'_>) -> S {
+    pub fn run(&self, log: LogView<'_, E>) -> S {
         (self.done)(&self.state(log))
     }
 
     /// The output after every prefix, in one pass. Yields `(n, output)`
     /// where `n` is the absolute prefix end: first `(skip, done(init))`,
     /// then one item per event.
-    pub fn scan<'s, 'l: 's>(&'s self, log: LogView<'l>) -> impl Iterator<Item = (usize, S)> + 's {
+    pub fn scan<'s, 'l: 's>(
+        &'s self,
+        log: LogView<'l, E>,
+    ) -> impl Iterator<Item = (usize, S)> + 's {
         let tail = log.suffix(self.skip);
         let first = (tail.base(), (self.done)(&self.init));
         let mut x = Some(self.init.clone());
@@ -105,7 +110,7 @@ impl<'a, X: Clone + 'a, S: 'a> Fold<'a, X, S> {
 
     /// The same fold, starting from `state` as if `upto` events were
     /// already folded. This *is* a checkpoint.
-    pub fn from(&self, state: X, upto: usize) -> Fold<'a, X, S> {
+    pub fn from(&self, state: X, upto: usize) -> Fold<'a, E, X, S> {
         Fold {
             init: state,
             step: self.step.clone(),
@@ -115,7 +120,7 @@ impl<'a, X: Clone + 'a, S: 'a> Fold<'a, X, S> {
     }
 
     /// Derive a projection from this fold's output.
-    pub fn map<T: 'a>(self, f: impl Fn(&S) -> T + 'a) -> Fold<'a, X, T> {
+    pub fn map<T: 'a>(self, f: impl Fn(&S) -> T + 'a) -> Fold<'a, E, X, T> {
         let done = self.done;
         Fold {
             init: self.init,
@@ -129,7 +134,10 @@ impl<'a, X: Clone + 'a, S: 'a> Fold<'a, X, S> {
     ///
     /// Both must start at the same index; zipping folds resumed from
     /// different checkpoints is a bug, and is caught in debug builds.
-    pub fn zip<Y: Clone + 'a, T: 'a>(self, other: Fold<'a, Y, T>) -> Fold<'a, (X, Y), (S, T)> {
+    pub fn zip<Y: Clone + 'a, T: 'a>(
+        self,
+        other: Fold<'a, E, Y, T>,
+    ) -> Fold<'a, E, (X, Y), (S, T)> {
         debug_assert_eq!(
             self.skip, other.skip,
             "zip of folds resumed at different indices"
@@ -146,7 +154,7 @@ impl<'a, X: Clone + 'a, S: 'a> Fold<'a, X, S> {
 
     /// Restrict the fold to the events it declares. Everything else is
     /// stepped over untouched. This is proposal §3.2's scope.
-    pub fn scoped(self, keep: impl Fn(&Event) -> bool + 'a) -> Fold<'a, X, S> {
+    pub fn scoped(self, keep: impl Fn(&E) -> bool + 'a) -> Fold<'a, E, X, S> {
         let step = self.step;
         Fold {
             init: self.init,
@@ -159,9 +167,9 @@ impl<'a, X: Clone + 'a, S: 'a> Fold<'a, X, S> {
 
 /// The left-fold law: resuming from the state at any split equals folding
 /// the whole. Returns the first violating split.
-pub fn checkpoint_law<X: Clone, S: PartialEq + std::fmt::Debug>(
-    f: &Fold<'_, X, S>,
-    log: LogView<'_>,
+pub fn checkpoint_law<E, X: Clone, S: PartialEq + std::fmt::Debug>(
+    f: &Fold<'_, E, X, S>,
+    log: LogView<'_, E>,
 ) -> Result<(), String> {
     let full = f.run(log);
     for k in log.base()..=log.end() {
@@ -205,7 +213,7 @@ impl<X: Clone> Checkpoints<X> {
     }
 
     /// Fold `log` up to `n` and save the result.
-    pub fn take<S>(&mut self, fold: &Fold<'_, X, S>, log: LogView<'_>, n: usize) {
+    pub fn take<E, S>(&mut self, fold: &Fold<'_, E, X, S>, log: LogView<'_, E>, n: usize) {
         let n = n.min(log.end());
         self.insert(n, fold.state(log.prefix(n)));
     }
@@ -225,7 +233,7 @@ impl<X: Clone> Checkpoints<X> {
 
     /// `fold` resumed from the nearest saved state at or before `n`, or
     /// from its own start if none is saved.
-    pub fn resume<'a, S: 'a>(&self, fold: &Fold<'a, X, S>, n: usize) -> Fold<'a, X, S>
+    pub fn resume<'a, E: 'a, S: 'a>(&self, fold: &Fold<'a, E, X, S>, n: usize) -> Fold<'a, E, X, S>
     where
         X: 'a,
     {
@@ -237,7 +245,12 @@ impl<X: Clone> Checkpoints<X> {
 
     /// Output after the first `n` events of `log`, resuming from the
     /// nearest saved state. `n` is clamped to the log length.
-    pub fn output_at<'a, S: 'a>(&self, fold: &Fold<'a, X, S>, log: LogView<'_>, n: usize) -> S
+    pub fn output_at<'a, E: 'a, S: 'a>(
+        &self,
+        fold: &Fold<'a, E, X, S>,
+        log: LogView<'_, E>,
+        n: usize,
+    ) -> S
     where
         X: 'a,
     {
@@ -253,56 +266,84 @@ impl<X: Clone> Checkpoints<X> {
 }
 
 /// Virtual time: the most recent `Tick`, 0 before any.
-pub fn now() -> Fold<'static, u64> {
+pub fn now<D: Domain>() -> Fold<'static, Event<D>, u64> {
     Fold::new(0, |t, _, ev| match ev {
-        Event::Pure(Pure::Tick { ms }) => *ms,
+        Event::Tick { ms } => *ms,
         _ => t,
     })
 }
 
-/// Effects the host has started and the world has not yet answered.
+/// Effects the host has started and that are not over.
 ///
-/// `Started` inserts, unless the effect expects no result, in which case
-/// starting *is* resolving. `Io` removes the effect with the matching
-/// request id. Because this is a fold, the host's "outbox" survives a
-/// restart for free: fold the log, perform whatever is still here.
-pub fn in_flight() -> Fold<'static, BTreeSet<Effect>> {
-    Fold::new(BTreeSet::new(), |mut s, _, ev| {
-        match ev {
-            Event::Started { effect, .. } if effect.expects_result() => {
-                s.insert(effect.clone());
+/// `Started` inserts. `Io` removes the effect with the matching request
+/// id. A fire-and-forget effect (no request id) is never removed: its
+/// `Started` event is the permanent record that it happened, which is what
+/// stops the host re-firing it. Because this is a fold, the host's
+/// "outbox" survives a restart for free: fold the log, perform whatever
+/// is still here and expects a result.
+pub fn in_flight<D: Domain>() -> Fold<'static, Event<D>, BTreeSet<D::Effect>> {
+    Fold::new(
+        BTreeSet::new(),
+        |mut s: BTreeSet<D::Effect>, _, ev: &Event<D>| {
+            match ev {
+                Event::Started { effect, .. } => {
+                    s.insert(effect.clone());
+                }
+                Event::Io { req, .. } => {
+                    s.retain(|e| e.req() != Some(*req));
+                }
+                _ => {}
             }
-            Event::Io { req, .. } => {
-                s.retain(|e| e.req() != Some(*req));
-            }
-            _ => {}
-        }
-        s
-    })
+            s
+        },
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::event::{IoResult, Never, ReqId};
     use crate::log::Log;
 
+    #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+    struct T;
+    #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+    enum Fx {
+        Post(ReqId),
+        Ping(Index),
+    }
+    impl Action for Fx {
+        fn req(&self) -> Option<ReqId> {
+            match self {
+                Fx::Post(r) => Some(*r),
+                Fx::Ping(_) => None,
+            }
+        }
+    }
+    impl Domain for T {
+        type Input = ();
+        type Sense = Never;
+        type Effect = Fx;
+    }
+    type Ev = Event<T>;
+
     /// Count of ticks and the last tick value.
-    fn ticks() -> Fold<'static, (u32, u64)> {
+    fn ticks() -> Fold<'static, Ev, (u32, u64)> {
         Fold::new((0, 0), |(n, last), _, ev| match ev {
-            Event::Pure(Pure::Tick { ms }) => (n + 1, *ms),
+            Event::Tick { ms } => (n + 1, *ms),
             _ => (n, last),
         })
     }
 
     #[test]
     fn checkpoint_law_holds_for_ticks() {
-        let log: Log = (1..=5).map(Event::tick).collect();
+        let log: Log<Ev> = (1..=5).map(Ev::tick).collect();
         checkpoint_law(&ticks(), log.view()).unwrap();
     }
 
     #[test]
     fn scan_yields_every_prefix() {
-        let log: Log = (1..=3).map(Event::tick).collect();
+        let log: Log<Ev> = (1..=3).map(Ev::tick).collect();
         let outs: Vec<_> = ticks().scan(log.view()).collect();
         assert_eq!(
             outs,
@@ -312,7 +353,7 @@ mod tests {
 
     #[test]
     fn from_skips_and_scan_starts_at_skip() {
-        let log: Log = (1..=4).map(Event::tick).collect();
+        let log: Log<Ev> = (1..=4).map(Ev::tick).collect();
         let f = ticks();
         let ck = f.from(f.state(log.prefix(2)), 2);
         assert_eq!(ck.run(log.view()), (4, 4));
@@ -320,30 +361,29 @@ mod tests {
             ck.scan(log.view()).map(|(n, _)| n).collect::<Vec<_>>(),
             vec![2, 3, 4]
         );
-        // a prefix shorter than the checkpoint folds nothing
         assert_eq!(ck.run(log.prefix(1)), (2, 2));
     }
 
     #[test]
     fn map_zip_and_scoped_compose() {
-        let log: Log = [Event::tick(5), Event::click("k"), Event::tick(7)]
+        let log: Log<Ev> = [Ev::tick(5), Ev::input("k", ()), Ev::tick(7)]
             .into_iter()
             .collect();
         let count = Fold::new(0u32, |n, _, _| n + 1);
-        let only_ticks = Fold::new(0u32, |n, _, _| n + 1).scoped(Event::is_pure);
-        let clicks_only =
-            Fold::new(0u32, |n, _, _| n + 1).scoped(|e| matches!(e, Event::Pure(Pure::Ui { .. })));
+        let only_pure = Fold::new(0u32, |n, _, _| n + 1).scoped(Ev::is_pure);
+        let inputs_only =
+            Fold::new(0u32, |n, _, _| n + 1).scoped(|e| matches!(e, Event::Input { .. }));
         let both = count
-            .zip(only_ticks)
-            .zip(clicks_only)
+            .zip(only_pure)
+            .zip(inputs_only)
             .map(|((a, b), c)| (*a, *b, *c));
         assert_eq!(both.run(log.view()), (3, 3, 1));
-        assert_eq!(now().map(|t| t * 2).run(log.view()), 14);
+        assert_eq!(now::<T>().map(|t| t * 2).run(log.view()), 14);
     }
 
     #[test]
     fn store_resumes_from_nearest_checkpoint() {
-        let log: Log = (1..=10).map(Event::tick).collect();
+        let log: Log<Ev> = (1..=10).map(Ev::tick).collect();
         let f = ticks();
         let mut store = Checkpoints::new();
         store.take(&f, log.view(), 4);
@@ -365,53 +405,24 @@ mod tests {
     }
 
     #[test]
-    fn in_flight_tracks_started_minus_answered_and_skips_result_less() {
-        use crate::effect::IdemKey;
-        use crate::event::IoResult;
-        let k = || "post:1".to_string();
-        let idem = |i| IdemKey {
-            scope: k(),
-            index: i,
-        };
-        let post = Effect::Post {
-            req: 0,
-            key: k(),
-            intent: true,
-            idem: idem(0),
-        };
-        let ping = Effect::Ping {
-            key: k(),
-            idem: idem(1),
-        };
-        let log: Log = [
-            Event::click(k()),
-            Event::Started {
-                key: k(),
-                req: 0,
-                effect: post.clone(),
-            },
-            Event::Started {
-                key: k(),
-                req: 1,
-                effect: ping,
-            },
-            Event::Io {
-                key: k(),
-                req: 0,
-                res: IoResult::Done,
-            },
+    fn in_flight_tracks_started_minus_answered_and_keeps_fire_and_forget() {
+        let log: Log<Ev> = [
+            Ev::input("k", ()),
+            Ev::started("k", 1, Fx::Post(1)),
+            Ev::started("k", 2, Fx::Ping(2)),
+            Ev::io("k", 1, IoResult::Done),
         ]
         .into_iter()
         .collect();
-        let f = in_flight();
+        let f = in_flight::<T>();
         assert_eq!(f.run(log.prefix(1)), BTreeSet::new());
-        assert_eq!(f.run(log.prefix(2)), [post.clone()].into());
+        assert_eq!(f.run(log.prefix(2)), [Fx::Post(1)].into());
+        assert_eq!(f.run(log.prefix(3)), [Fx::Post(1), Fx::Ping(2)].into());
         assert_eq!(
-            f.run(log.prefix(3)),
-            [post].into(),
-            "ping resolves on start"
+            f.run(log.prefix(4)),
+            [Fx::Ping(2)].into(),
+            "ping stays as the record"
         );
-        assert_eq!(f.run(log.prefix(4)), BTreeSet::new());
         checkpoint_law(&f, log.view()).unwrap();
     }
 }

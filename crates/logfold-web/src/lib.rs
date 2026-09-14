@@ -16,9 +16,11 @@
 //! Checkpoint policy lives here, in the host: one saved state every
 //! `CHECKPOINT_EVERY` events. The core never decides when.
 
-use like_local::{View, click, like};
-use logfold_core::{Checkpoints, Event, Fold, Log, Pure, UiEvent};
+use like_local::{Ev, View, click, like};
+use logfold_core::{Checkpoints, Event, Fold, Log};
 use wasm_bindgen::prelude::*;
+
+pub mod vacuum;
 
 const CHECKPOINT_EVERY: usize = 8;
 
@@ -28,17 +30,17 @@ const CHECKPOINT_EVERY: usize = 8;
 enum Kind {
     Click = 0,
     Tick = 1,
-    Io = 2,
-    Started = 3,
+    Sense = 2,
+    Io = 3,
+    Started = 4,
 }
 
 impl Kind {
-    fn of(ev: &Event) -> Kind {
+    fn of(ev: &Ev) -> Kind {
         match ev {
-            Event::Pure(Pure::Ui {
-                ev: UiEvent::Click, ..
-            }) => Kind::Click,
-            Event::Pure(Pure::Tick { .. }) => Kind::Tick,
+            Event::Input { .. } => Kind::Click,
+            Event::Tick { .. } => Kind::Tick,
+            Event::Sense { .. } => Kind::Sense,
             Event::Io { .. } => Kind::Io,
             Event::Started { .. } => Kind::Started,
         }
@@ -61,11 +63,11 @@ fn label(s: &'static str) -> JsValue {
 
 #[wasm_bindgen]
 pub struct LikeApp {
-    log: Log,
-    like: Fold<'static, View>,
+    log: Log<Ev>,
+    like: Fold<'static, Ev, View>,
     checkpoints: Checkpoints<View>,
     /// JS strings, created once. Indexed by `Kind`. Handles, not bytes.
-    labels: [JsValue; 4],
+    labels: [JsValue; 5],
 }
 
 impl Default for LikeApp {
@@ -78,7 +80,13 @@ impl Default for LikeApp {
 impl LikeApp {
     #[wasm_bindgen(constructor)]
     pub fn new() -> Self {
-        let labels = [label("click"), label("tick"), label("io"), label("started")];
+        let labels = [
+            label("click"),
+            label("tick"),
+            label("sense"),
+            label("io"),
+            label("started"),
+        ];
         Self {
             log: Log::new(),
             like: like(),
@@ -94,7 +102,7 @@ impl LikeApp {
 
     /// Virtual time advanced. `ms` is whatever clock the host chooses.
     pub fn tick(&mut self, ms: f64) -> u32 {
-        self.append(Event::tick(ms as u64))
+        self.append(Ev::tick(ms as u64))
     }
 
     /// Number of events in the log.
@@ -134,24 +142,23 @@ impl LikeApp {
     /// The label of event `i` as a JS string handle, or `undefined`.
     /// No bytes are copied: the handle was made once in `new`.
     pub fn kind(&self, i: u32) -> JsValue {
-        self.event(i).map_or(JsValue::UNDEFINED, |e| {
-            self.labels[Kind::of(e) as usize].clone()
-        })
+        self.log
+            .view()
+            .get(i as usize)
+            .map_or(JsValue::UNDEFINED, |e| {
+                self.labels[Kind::of(e) as usize].clone()
+            })
     }
 
     /// The tick time of event `i`, or NaN if it is not a tick.
     pub fn tick_ms(&self, i: u32) -> f64 {
-        match self.event(i) {
-            Some(Event::Pure(Pure::Tick { ms })) => *ms as f64,
+        match self.log.view().get(i as usize) {
+            Some(Event::Tick { ms }) => *ms as f64,
             _ => f64::NAN,
         }
     }
 
-    fn event(&self, i: u32) -> Option<&Event> {
-        self.log.view().iter().nth(i as usize).map(|(_, e)| e)
-    }
-
-    fn append(&mut self, ev: Event) -> u32 {
+    fn append(&mut self, ev: Ev) -> u32 {
         let i = self.log.append(ev);
         let n = self.log.len();
         if n.is_multiple_of(CHECKPOINT_EVERY) {

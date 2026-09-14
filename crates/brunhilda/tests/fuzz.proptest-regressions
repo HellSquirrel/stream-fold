@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc fcf82aef9a534a1cf9d6d11557ff66134bb61e3fa15293b8cd7fe2fce1e85eb1 # shrinks to sc = Scenario { human_start: Cell { x: 0, y: 1 }, steps: [Cmd(EStop), Cmd(Dock), Frame { human: None, dropout: false, jump: false }] }
+cc 75e5989711af33b1ed3557cb62126b9e265f479ec967b5771a48928dcb32f820 # shrinks to sc = Scenario { human_start: Cell { x: 1, y: 0 }, steps: [Frame { human: None, dropout: false, jump: false }] }

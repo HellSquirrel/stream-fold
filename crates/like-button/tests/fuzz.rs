@@ -18,9 +18,12 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use like_button::{POST, View, desired, desired_effects, events, in_scope, like_button, step};
+use like_button::{
+    Click, Effect, Ev, LikeButton, POST, View, desired, desired_effects, events, in_scope,
+    like_button, step,
+};
 use logfold_core::{
-    Effect, Event, Expectation, Fold, Index, IoResult, Log, LogView, ReqId, check_all_prefixes,
+    Action, Event, Expectation, Fold, Index, IoResult, Log, LogView, ReqId, check_all_prefixes,
     checkpoint_law, diff_effects, in_flight,
 };
 use proptest::prelude::*;
@@ -38,8 +41,8 @@ struct Server {
     answered: BTreeSet<ReqId>,
 }
 
-fn server() -> Fold<'static, Server> {
-    Fold::new(Server::default(), |mut s, _, ev| {
+fn server() -> Fold<'static, Ev, Server> {
+    Fold::new(Server::default(), |mut s: Server, _, ev: &Ev| {
         match ev {
             Event::Started {
                 effect: Effect::Post { req, intent, .. },
@@ -66,7 +69,7 @@ fn server() -> Fold<'static, Server> {
 
 /// A `Post` is desired exactly when the user wants something unconfirmed
 /// and nothing is in flight, and it carries the wanted value.
-fn effects_match_pending() -> Expectation<'static> {
+fn effects_match_pending() -> Expectation<'static, Ev> {
     Expectation::on("effects_match_pending", like_button(), |v| {
         let fx = desired_effects(v);
         let want_request = v.dirty() && v.pending.is_none();
@@ -81,10 +84,10 @@ fn effects_match_pending() -> Expectation<'static> {
 }
 
 /// The fold's idea of "in flight" agrees with the core's `in_flight` fold.
-fn pending_matches_in_flight() -> Expectation<'static> {
+fn pending_matches_in_flight() -> Expectation<'static, Ev> {
     Expectation::on(
         "pending_matches_in_flight",
-        like_button().zip(in_flight()),
+        like_button().zip(in_flight::<LikeButton>()),
         |(v, fx)| {
             let reqs: Vec<ReqId> = fx.iter().filter_map(|e| e.req()).collect();
             match (&v.pending, reqs.as_slice()) {
@@ -98,7 +101,7 @@ fn pending_matches_in_flight() -> Expectation<'static> {
 
 /// The host never starts an effect the fold did not want at that moment.
 /// A fold that carries the view *before* each event and a sticky verdict.
-fn started_only_when_desired() -> Expectation<'static> {
+fn started_only_when_desired() -> Expectation<'static, Ev> {
     let judge = Fold::new(
         (View::default(), Ok::<(), String>(())),
         |(v, verdict), i, ev| {
@@ -118,7 +121,7 @@ fn started_only_when_desired() -> Expectation<'static> {
 
 /// Whenever the system is settled (nothing in flight, nothing the fold
 /// still wants started), client and server agree on `liked`.
-fn client_server_agree() -> Expectation<'static> {
+fn client_server_agree() -> Expectation<'static, Ev> {
     let all = like_button()
         .zip(server())
         .zip(in_flight())
@@ -140,7 +143,7 @@ fn client_server_agree() -> Expectation<'static> {
     })
 }
 
-fn expectations() -> Vec<Expectation<'static>> {
+fn expectations() -> Vec<Expectation<'static, Ev>> {
     vec![
         effects_match_pending(),
         pending_matches_in_flight(),
@@ -155,7 +158,7 @@ fn expectations() -> Vec<Expectation<'static>> {
 /// host had acted and control returned to the user or the world.
 #[derive(Clone, Debug)]
 struct Played {
-    log: Log,
+    log: Log<Ev>,
     frames: Vec<usize>,
 }
 
@@ -167,7 +170,7 @@ impl Played {
         }
     }
 
-    fn append(&mut self, ev: Event) -> Index {
+    fn append(&mut self, ev: Ev) -> Index {
         self.log.append(ev)
     }
 
@@ -175,7 +178,7 @@ impl Played {
     /// flight, then close the frame.
     fn host_acts(&mut self) {
         let v = self.log.view();
-        let d = diff_effects(&desired().run(v), &in_flight().run(v));
+        let d = diff_effects(&desired().run(v), &in_flight::<LikeButton>().run(v));
         for fx in d.start {
             self.log.append(events::started(fx));
         }
@@ -199,9 +202,9 @@ impl Played {
 /// recorded rather than on every prefix: a prefix ending on the world's
 /// answer is mid-frame.
 fn nothing_to_start_at_frame_boundaries(p: &Played) -> Result<(), String> {
-    let (want, fx) = (desired(), in_flight());
+    let (want, fx) = (desired(), in_flight::<LikeButton>());
     for &n in &p.frames {
-        let log: LogView = p.log.prefix(n);
+        let log: LogView<'_, Ev> = p.log.prefix(n);
         let d = diff_effects(&want.run(log), &fx.run(log));
         if !d.start.is_empty() {
             return Err(format!(
@@ -270,7 +273,7 @@ enum Res {
 }
 
 impl Res {
-    fn event(self, req: ReqId) -> Event {
+    fn event(self, req: ReqId) -> Ev {
         let res = match self {
             Res::Done => IoResult::Done,
             Res::Failed => IoResult::Failed,
@@ -335,7 +338,7 @@ fn play(steps: Vec<Step>) -> Played {
                 p.append(res.event(req + 1_000));
             }
             Step::OtherPost => {
-                p.append(Event::click("post:7"));
+                p.append(Ev::input("post:7", Click));
             }
         }
         p.host_acts();

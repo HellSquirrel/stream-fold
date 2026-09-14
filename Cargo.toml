@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/logfold-core", "crates/like-local", "crates/like-button"]
+members = ["crates/logfold-core", "crates/like-local", "crates/like-button", "crates/logfold-web"]
 
 [workspace.package]
 edition = "2024"
@@ -9,3 +9,8 @@ license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
 proptest = "1"
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"

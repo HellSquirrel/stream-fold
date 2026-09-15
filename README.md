@@ -29,7 +29,7 @@ cd crates/logfold-web && python3 -m http.server 8765
 
 The shim in `www/index.html` appends an event per click, writes the view
 into the DOM, and asks for the view at any index when the slider moves.
-Checkpoints are taken every 8 events, in the host, and the provenance line
+Checkpoints are taken roughly every 8 events, decided by the host, and the provenance line
 shows which one the scrubber resumed from.
 
 ## M0 status

@@ -190,19 +190,6 @@ impl VacuumApp {
             .collect()
     }
 
-    /// Event kind at `i`: 0 input, 1 sense, 2 tick, 3 started, -1 none.
-    pub fn kind(&self, i: u32) -> i32 {
-        use logfold_core::Event;
-        match self.log.view().get(i as usize) {
-            Some(Event::Input { .. }) => 0,
-            Some(Event::Sense { .. }) => 1,
-            Some(Event::Tick { .. }) => 2,
-            Some(Event::Started { .. }) => 3,
-            Some(Event::Io { .. }) => 4,
-            None => -1,
-        }
-    }
-
     fn brain_at(&self, n: u32) -> Brain {
         self.checkpoints
             .output_at(&self.brain, self.log.view(), n as usize)
@@ -210,7 +197,7 @@ impl VacuumApp {
 
     fn checkpoint(&mut self) {
         let n = self.log.len();
-        if n / CHECKPOINT_EVERY > self.checkpoints.len() {
+        if crate::due(&self.checkpoints, n, CHECKPOINT_EVERY) {
             self.checkpoints.take(&self.brain, self.log.view(), n);
         }
     }

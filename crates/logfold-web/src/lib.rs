@@ -24,6 +24,14 @@ pub mod vacuum;
 
 const CHECKPOINT_EVERY: usize = 8;
 
+/// The one cadence rule both hosts use: take a checkpoint once `every`
+/// events have landed since the last one. Counting from the last
+/// checkpoint rather than from zero keeps the rule honest when a single
+/// user action appends several events.
+pub(crate) fn due<X: Clone>(checkpoints: &Checkpoints<X>, n: usize, every: usize) -> bool {
+    n - checkpoints.nearest(n).map_or(0, |(upto, _)| upto) >= every
+}
+
 /// Event kinds, as indices into a table of JS string handles.
 #[derive(Clone, Copy)]
 #[repr(u8)]
@@ -161,7 +169,7 @@ impl LikeApp {
     fn append(&mut self, ev: Ev) -> u32 {
         let i = self.log.append(ev);
         let n = self.log.len();
-        if n.is_multiple_of(CHECKPOINT_EVERY) {
+        if due(&self.checkpoints, n, CHECKPOINT_EVERY) {
             self.checkpoints.take(&self.like, self.log.view(), n);
         }
         i as u32

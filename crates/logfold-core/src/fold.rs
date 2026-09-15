@@ -78,9 +78,24 @@ impl<'a, E: 'a, X: Clone + 'a, S: 'a> Fold<'a, E, X, S> {
         self.skip
     }
 
+    /// The part of `log` this fold has not folded yet.
+    ///
+    /// A resumed fold run on a view that ends before its start would
+    /// report the saved state as if it were the answer for a shorter
+    /// prefix. That is a caller bug, and it is caught in debug builds.
+    fn tail<'l>(&self, log: LogView<'l, E>) -> LogView<'l, E> {
+        debug_assert!(
+            log.end() >= self.skip,
+            "fold resumed at {} run on a view ending at {}",
+            self.skip,
+            log.end()
+        );
+        log.suffix(self.skip)
+    }
+
     /// Fold the view (from `skip` onward) and return the final internal state.
     pub fn state(&self, log: LogView<'_, E>) -> X {
-        log.suffix(self.skip)
+        self.tail(log)
             .iter()
             .fold(self.init.clone(), |x, (i, e)| (self.step)(x, i, e))
     }
@@ -97,7 +112,7 @@ impl<'a, E: 'a, X: Clone + 'a, S: 'a> Fold<'a, E, X, S> {
         &'s self,
         log: LogView<'l, E>,
     ) -> impl Iterator<Item = (usize, S)> + 's {
-        let tail = log.suffix(self.skip);
+        let tail = self.tail(log);
         let first = (tail.base(), (self.done)(&self.init));
         let mut x = Some(self.init.clone());
         std::iter::once(first).chain(tail.iter().map(move |(i, e)| {
@@ -174,7 +189,7 @@ pub fn checkpoint_law<E, X: Clone, S: PartialEq + std::fmt::Debug>(
     log: LogView<'_, E>,
 ) -> Result<(), String> {
     let full = f.run(log);
-    for k in log.base()..=log.end() {
+    for k in log.base().max(f.skip())..=log.end() {
         let resumed = f.from(f.state(log.prefix(k)), k).run(log);
         if resumed != full {
             return Err(format!(
@@ -190,7 +205,9 @@ pub fn checkpoint_law<E, X: Clone, S: PartialEq + std::fmt::Debug>(
 /// logarithmic time, which is what scrubbing, replay and export need.
 ///
 /// Retention is the caller's policy: insert whenever you like, prune
-/// whenever you like. The store never folds on its own.
+/// whenever you like. The store folds only when asked ([`Checkpoints::take`],
+/// [`Checkpoints::output_at`]), and then only from the nearest saved state,
+/// so a chain of takes costs the events between them, not the whole log.
 #[derive(Clone, Debug)]
 pub struct Checkpoints<X> {
     by_upto: BTreeMap<usize, X>,
@@ -214,10 +231,20 @@ impl<X: Clone> Checkpoints<X> {
         self.by_upto.insert(upto, state);
     }
 
-    /// Fold `log` up to `n` and save the result.
-    pub fn take<E, S>(&mut self, fold: &Fold<'_, E, X, S>, log: LogView<'_, E>, n: usize) {
+    /// Save the fold's state after the first `n` events of `log`, folding
+    /// only from the nearest saved state at or before `n`. The left-fold
+    /// law makes that the same state as folding from zero.
+    pub fn take<'a, E: 'a, S: 'a>(
+        &mut self,
+        fold: &Fold<'a, E, X, S>,
+        log: LogView<'_, E>,
+        n: usize,
+    ) where
+        X: 'a,
+    {
         let n = n.min(log.end());
-        self.insert(n, fold.state(log.prefix(n)));
+        let state = self.resume(fold, n).state(log.prefix(n));
+        self.insert(n, state);
     }
 
     pub fn len(&self) -> usize {
@@ -235,10 +262,18 @@ impl<X: Clone> Checkpoints<X> {
 
     /// `fold` resumed from the nearest saved state at or before `n`, or
     /// from its own start if none is saved.
+    ///
+    /// `n` must be at or after `fold.skip()`: a fold cannot be resumed
+    /// before the point it already starts at.
     pub fn resume<'a, E: 'a, S: 'a>(&self, fold: &Fold<'a, E, X, S>, n: usize) -> Fold<'a, E, X, S>
     where
         X: 'a,
     {
+        debug_assert!(
+            n >= fold.skip(),
+            "resume at {n} before the fold's start {}",
+            fold.skip()
+        );
         match self.nearest(n) {
             Some((upto, x)) if upto >= fold.skip() => fold.from(x.clone(), upto),
             _ => fold.from(fold.init(), fold.skip()),
@@ -246,7 +281,8 @@ impl<X: Clone> Checkpoints<X> {
     }
 
     /// Output after the first `n` events of `log`, resuming from the
-    /// nearest saved state. `n` is clamped to the log length.
+    /// nearest saved state. `n` is clamped to the log length and must be
+    /// at or after `fold.skip()`.
     pub fn output_at<'a, E: 'a, S: 'a>(
         &self,
         fold: &Fold<'a, E, X, S>,
@@ -280,9 +316,11 @@ pub fn now<D: Domain>() -> Fold<'static, Event<D>, u64> {
 /// `Started` inserts. `Io` removes the effect with the matching request
 /// id. A fire-and-forget effect (no request id) is never removed: its
 /// `Started` event is the permanent record that it happened, which is what
-/// stops the host re-firing it. Because this is a fold, the host's
-/// "outbox" survives a restart for free: fold the log, perform whatever
-/// is still here and expects a result.
+/// stops the host re-firing it. So the set grows with the number of
+/// fire-and-forget effects ever started; that is by design, and it is
+/// what a checkpoint of this fold carries. Because this is a fold, the
+/// host's "outbox" survives a restart for free: fold the log, perform
+/// whatever is still here and expects a result.
 pub fn in_flight<D: Domain>() -> Fold<'static, Event<D>, BTreeSet<D::Effect>> {
     Fold::new(
         BTreeSet::new(),
@@ -363,7 +401,18 @@ mod tests {
             ck.scan(log.view()).map(|(n, _)| n).collect::<Vec<_>>(),
             vec![2, 3, 4]
         );
-        assert_eq!(ck.run(log.prefix(1)), (2, 2));
+        // A resumed fold obeys the law from its own start onward.
+        checkpoint_law(&ck, log.view()).unwrap();
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "fold resumed at 2 run on a view ending at 1")]
+    fn resumed_fold_on_a_shorter_view_is_a_bug() {
+        let log: Log<Ev> = (1..=4).map(Ev::tick).collect();
+        let f = ticks();
+        let ck = f.from(f.state(log.prefix(2)), 2);
+        let _ = ck.run(log.prefix(1));
     }
 
     #[test]

@@ -61,7 +61,7 @@
     for (let i = 0; i < total; i++) {
       const kind = app.kind(i);                       // a JS string handle, no copy
       const label = kind === "tick" ? `tick ${app.tick_ms(i).toFixed(0)}` : kind;
-      const cls = [kind === "click" ? "click" : "", i >= n ? "past" : "", (i + 1) % 8 === 0 ? "ckpt" : ""].join(" ");
+      const cls = [kind === "click" ? "click" : "", i >= n ? "past" : "", app.checkpoint_for(i + 1) === i + 1 ? "ckpt" : ""].join(" ");
       spans.push(`<span class="${cls}" title="index ${i}">${i}·${label}</span>`);
     }
     timeline.innerHTML = spans.join("");

@@ -8,6 +8,9 @@ use logfold_core::{Checkpoints, Fold, Log, diff_effects, in_flight};
 
 use crate::{Brain, Cell, Cmd, Dir, Effect, Ev, KEY, Room, Vacuum, events};
 
+/// Everything the host needs per frame: her brain and what it has started.
+type HostState = (Brain, BTreeSet<Effect>);
+
 #[derive(Clone, Debug)]
 pub struct Sim {
     pub room: Room,
@@ -18,11 +21,11 @@ pub struct Sim {
     pub attacks: u32,
     pub bumps: u32,
     pub ms: u64,
-    /// Host-side checkpoint policy: her state at the end of every frame,
-    /// so reading her heading costs the events since the last frame, not
-    /// the whole log. Only the latest is kept; the sim is a host, not an
+    /// Host-side checkpoint policy: the host state at the end of every
+    /// frame, so each frame costs the events since the last one, not the
+    /// whole log. Only the latest is kept; the sim is a host, not an
     /// archive.
-    checkpoints: Checkpoints<Brain>,
+    checkpoints: Checkpoints<HostState>,
 }
 
 /// What the human tries to do in a frame, and what the world does to her senses.
@@ -33,6 +36,11 @@ pub struct Frame {
     pub dropout: bool,
     /// Milliseconds this frame took.
     pub dt: u64,
+}
+
+/// Her brain zipped with the in-flight set: one fold, one checkpoint.
+fn host_fold<'a>(brain: &Fold<'a, Ev, Brain>) -> Fold<'a, Ev, HostState> {
+    brain.clone().zip(in_flight::<Vacuum>())
 }
 
 impl Sim {
@@ -52,12 +60,17 @@ impl Sim {
 
     /// Her brain as of the end of `log`, resumed from the last checkpoint.
     pub fn brain_now(&self, log: &Log<Ev>, brain: &Fold<'_, Ev, Brain>) -> Brain {
-        self.checkpoints.output_at(brain, log.view(), log.len())
+        self.host_now(log, brain).0
+    }
+
+    fn host_now(&self, log: &Log<Ev>, brain: &Fold<'_, Ev, Brain>) -> HostState {
+        self.checkpoints
+            .output_at(&host_fold(brain), log.view(), log.len())
     }
 
     fn checkpoint(&mut self, log: &Log<Ev>, brain: &Fold<'_, Ev, Brain>) {
         let n = log.len();
-        let state = self.brain_now(log, brain);
+        let state = self.host_now(log, brain);
         self.checkpoints = Checkpoints::new();
         self.checkpoints.insert(n, state);
     }
@@ -116,10 +129,11 @@ impl Sim {
     }
 
     /// Start whatever she desires that has not been started: record it in
-    /// the log first, then perform it.
+    /// the log first, then perform it. The in-flight set comes from the
+    /// same checkpoint as her brain, so nothing here refolds the log.
     pub fn host_acts(&mut self, log: &mut Log<Ev>, brain: &Fold<'_, Ev, Brain>) {
-        let desired: BTreeSet<Effect> = self.brain_now(log, brain).desired_effects();
-        let d = diff_effects(&desired, &in_flight::<Vacuum>().run(log.view()));
+        let (b, in_flight) = self.host_now(log, brain);
+        let d = diff_effects(&b.desired_effects(), &in_flight);
         for fx in d.start {
             log.append(Ev::started(KEY, fx.clone()));
             self.perform(&fx);

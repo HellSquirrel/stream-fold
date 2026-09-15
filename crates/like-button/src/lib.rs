@@ -187,8 +187,7 @@ pub mod events {
     }
     /// Host bookkeeping: `effect` was started.
     pub fn started(effect: Effect) -> Ev {
-        let req = effect.req().expect("like-button effects expect a result");
-        Ev::started(key(), req, effect)
+        Ev::started(key(), effect)
     }
     pub fn done(req: ReqId) -> Ev {
         Ev::io(key(), req, IoResult::Done)

@@ -431,8 +431,8 @@ mod tests {
     fn in_flight_tracks_started_minus_answered_and_keeps_fire_and_forget() {
         let log: Log<Ev> = [
             Ev::input("k", ()),
-            Ev::started("k", 1, Fx::Post(1)),
-            Ev::started("k", 2, Fx::Ping(2)),
+            Ev::started("k", Fx::Post(1)),
+            Ev::started("k", Fx::Ping(2)),
             Ev::io("k", 1, IoResult::Done),
         ]
         .into_iter()

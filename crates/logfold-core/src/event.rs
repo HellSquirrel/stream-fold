@@ -79,11 +79,8 @@ pub enum Event<D: Domain> {
     /// The world's answer to an effect the host performed.
     Io { key: Key, req: ReqId, res: IoResult },
     /// Host bookkeeping: an effect was started. Appended before performing.
-    Started {
-        key: Key,
-        req: ReqId,
-        effect: D::Effect,
-    },
+    /// The effect carries its own request id, if it expects an answer.
+    Started { key: Key, effect: D::Effect },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -152,12 +149,13 @@ impl<D: Domain> Event<D> {
         }
     }
 
-    /// Host bookkeeping for an effect. The request id comes from the
-    /// effect; fire-and-forget effects get the index-derived id `req`.
-    pub fn started(key: impl Into<Key>, req: ReqId, effect: D::Effect) -> Self {
+    /// Host bookkeeping for an effect, to be appended *before* the host
+    /// performs it. There is no separate request id: a result-bearing
+    /// effect carries its own ([`Action::req`]), and a fire-and-forget one
+    /// has nothing to be answered under.
+    pub fn started(key: impl Into<Key>, effect: D::Effect) -> Self {
         Event::Started {
             key: key.into(),
-            req: effect.req().unwrap_or(req),
             effect,
         }
     }

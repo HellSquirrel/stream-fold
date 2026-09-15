@@ -365,8 +365,10 @@ fn play(steps: Vec<Step>) -> Played {
         }
         p.host_acts();
         for (_, e) in p.log.view().iter().skip(before) {
-            if let Event::Started { req, .. } = e {
-                unanswered.push(*req);
+            if let Event::Started { effect, .. } = e
+                && let Some(r) = effect.req()
+            {
+                unanswered.push(r);
             }
         }
     }

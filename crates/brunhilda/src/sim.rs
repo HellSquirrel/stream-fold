@@ -115,16 +115,23 @@ impl Sim {
         attacked
     }
 
-    /// Start whatever she desires that has not been started. An e-stop
-    /// becomes a latch the moment it is recorded.
+    /// Start whatever she desires that has not been started: record it in
+    /// the log first, then perform it.
     pub fn host_acts(&mut self, log: &mut Log<Ev>, brain: &Fold<'_, Ev, Brain>) {
         let desired: BTreeSet<Effect> = self.brain_now(log, brain).desired_effects();
         let d = diff_effects(&desired, &in_flight::<Vacuum>().run(log.view()));
         for fx in d.start {
-            let req = log.len() as u64;
-            log.append(Ev::started(KEY, req, fx));
-            self.latched = true;
+            log.append(Ev::started(KEY, fx.clone()));
+            self.perform(&fx);
         }
         self.checkpoint(log, brain);
+    }
+
+    /// The world side of an effect. Exhaustive on purpose: a new effect
+    /// variant must say what the room does with it.
+    fn perform(&mut self, fx: &Effect) {
+        match fx {
+            Effect::EStop { .. } => self.latched = true,
+        }
     }
 }

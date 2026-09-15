@@ -20,23 +20,25 @@ pub struct Raw<D: Domain, X: Clone + 'static> {
 
 impl<D: Domain, X: Clone + 'static> Raw<D, X> {
     pub fn new(component: Component<D, X>) -> Self {
-        let mut host = Host::new(component);
-        let names: Vec<_> = host.inputs().collect();
-        for name in &names {
-            host.intern(name);
-        }
+        let host = Host::new(component);
+        let inputs = host.inputs().count() as u32;
         Self {
             host,
             patch: Vec::new(),
-            inputs: names.len() as u32,
+            inputs,
         }
     }
 
-    /// Ids `0..input_count()` are the inputs, in dispatch order.
     pub fn input_count(&self) -> u32 {
         self.inputs
     }
 
+    /// The name of input `i`, in dispatch order.
+    pub fn input_name(&self, i: u32) -> Option<&'static str> {
+        self.host.inputs().nth(i as usize)
+    }
+
+    /// The name behind a target or slot id in a patch.
     pub fn name(&self, id: u32) -> Option<&'static str> {
         self.host.name_str(id)
     }
@@ -127,6 +129,14 @@ macro_rules! export_raw {
                 with(|a| a.input_count())
             }
             #[unsafe(no_mangle)]
+            pub extern "C" fn lf_input_ptr(i: u32) -> *const u8 {
+                with(|a| a.input_name(i).map_or(std::ptr::null(), str::as_ptr))
+            }
+            #[unsafe(no_mangle)]
+            pub extern "C" fn lf_input_len(i: u32) -> u32 {
+                with(|a| a.input_name(i).map_or(0, |s| s.len() as u32))
+            }
+            #[unsafe(no_mangle)]
             pub extern "C" fn lf_name_ptr(id: u32) -> *const u8 {
                 with(|a| a.name(id).map_or(std::ptr::null(), str::as_ptr))
             }
@@ -186,14 +196,16 @@ mod tests {
     fn the_raw_wrapper_keeps_the_patch_and_names_inputs_first() {
         let mut r = Raw::new(like_local::component());
         assert_eq!(r.input_count(), 1);
-        assert_eq!(r.name(0), Some("toggle"));
+        assert_eq!(r.input_name(0), Some("toggle"));
+        assert_eq!(r.name(0), Some("root"), "the manifest's names come first");
         let n = r.dispatch(0);
-        assert_eq!(n, 4, "one slot changed: four numbers");
+        assert_eq!(n, 5, "one slot changed: five numbers");
         let patch = unsafe { std::slice::from_raw_parts(r.patch_ptr(), n as usize) };
-        assert_eq!(patch[3], 1.0, "data-liked = 1");
+        assert_eq!(patch[4], 1.0, "data-liked = 1");
+        assert_eq!(patch[1], -1.0, "not a family member");
         assert_eq!(r.name(patch[0] as u32), Some("root"));
-        assert_eq!(r.name(patch[2] as u32), Some("data-liked"));
-        assert_eq!(r.render_at(0), 4);
+        assert_eq!(r.name(patch[3] as u32), Some("data-liked"));
+        assert_eq!(r.render_at(0), 5);
         assert!(r.kind(0) == 0 && r.kind(9) == -1);
     }
 }

@@ -18,10 +18,10 @@ use std::collections::BTreeSet;
 
 use brunhilda::sim::{advance, human_move, sighting};
 use brunhilda::{
-    Brain, Cell, Cmd, Dir, Effect, H, KEY as ROBOT, Mode, Policy, Room, Sense, W, attacking,
+    Brain, Cell, Cmd, Dir, Effect, H, KEY as ROBOT, Mode, Policy, Room, Sense, attacking,
     step as robot_step,
 };
-use logfold_core::{Component, Domain, Event, Fold, Index, Name, Projection};
+use logfold_core::{Component, Domain, Event, Fold, Index, Projection};
 
 pub const KEY: &str = "studio";
 
@@ -157,80 +157,105 @@ pub fn simulate(room: &Room, s: &State, _dt: u64) -> Vec<Ev> {
     out
 }
 
-/// A cell's target name, `c-x-y`. A static table rather than `format!`,
-/// which would link string formatting into the bundle; column-major, the
-/// same order as `DistMap`.
-pub fn cell_name(c: Cell) -> Name {
-    const NAMES: [&str; (W * H) as usize] = [
-        "c-0-0", "c-0-1", "c-0-2", "c-0-3", "c-0-4", "c-0-5", "c-0-6", "c-0-7", "c-1-0", "c-1-1",
-        "c-1-2", "c-1-3", "c-1-4", "c-1-5", "c-1-6", "c-1-7", "c-2-0", "c-2-1", "c-2-2", "c-2-3",
-        "c-2-4", "c-2-5", "c-2-6", "c-2-7", "c-3-0", "c-3-1", "c-3-2", "c-3-3", "c-3-4", "c-3-5",
-        "c-3-6", "c-3-7", "c-4-0", "c-4-1", "c-4-2", "c-4-3", "c-4-4", "c-4-5", "c-4-6", "c-4-7",
-        "c-5-0", "c-5-1", "c-5-2", "c-5-3", "c-5-4", "c-5-5", "c-5-6", "c-5-7", "c-6-0", "c-6-1",
-        "c-6-2", "c-6-3", "c-6-4", "c-6-5", "c-6-6", "c-6-7", "c-7-0", "c-7-1", "c-7-2", "c-7-3",
-        "c-7-4", "c-7-5", "c-7-6", "c-7-7", "c-8-0", "c-8-1", "c-8-2", "c-8-3", "c-8-4", "c-8-5",
-        "c-8-6", "c-8-7", "c-9-0", "c-9-1", "c-9-2", "c-9-3", "c-9-4", "c-9-5", "c-9-6", "c-9-7",
-        "c-10-0", "c-10-1", "c-10-2", "c-10-3", "c-10-4", "c-10-5", "c-10-6", "c-10-7", "c-11-0",
-        "c-11-1", "c-11-2", "c-11-3", "c-11-4", "c-11-5", "c-11-6", "c-11-7",
-    ];
-    NAMES[(c.x * H + c.y) as usize]
-}
-
-fn mode_code(m: Mode) -> u8 {
-    match m {
-        Mode::Idle => 0,
-        Mode::Cleaning => 1,
-        Mode::Docking => 2,
-        Mode::Stopped { .. } => 3,
+logfold_core::slots! {
+    pub mod ui;
+    root {
+        attr running: bool;
+        attr dropouts: bool;
+        attr policy: enum { naive, careful };
+        attr mode: enum { idle, cleaning, docking, stopped };
+        attr latched: bool;
+        attr attacking: bool;
+        attr heading: enum { none, north, east, south, west };
+        attr seen: bool;
+        attr fresh: bool;
+        var fps: int = 4;
+        var her_x: int;
+        var her_y: int;
+        var human_x: int = 6;
+        var human_y: int = 6;
+        var seen_x: int = -1;
+        var seen_y: int = -1;
+        var seen_age: int = -1;
+        var attacks: int;
+        var bumps: int;
+        var cleaned: int;
+        var ticks: int;
     }
-}
-
-fn dir_code(d: Option<Dir>) -> i32 {
-    match d {
-        Some(Dir::N) => 0,
-        Some(Dir::E) => 1,
-        Some(Dir::S) => 2,
-        Some(Dir::W) => 3,
-        None => -1,
+    family cell((brunhilda::W * brunhilda::H)) {
+        attr cleaned: bool;
+        attr furniture: bool;
+        attr dock: bool;
     }
+    inputs { run, pause, naive, careful, dropouts, faster, slower, start, dock, estop, north, east, south, west }
+    consts { room_w: brunhilda::W, room_h: brunhilda::H, cell_px: 40 }
 }
 
-/// Everything the page shows, as numbers. Booleans and enums are
-/// attributes on the root for selectors; positions and counts are
-/// variables for `calc()`; cells are targets of their own.
+/// A cell's index in the `cell` family: column-major, like `DistMap`.
+pub fn cell_index(c: Cell) -> u32 {
+    (c.x * H + c.y) as u32
+}
+
+/// Everything the page shows, as numbers on the declared slots. Booleans
+/// and enums are attributes for selectors, spelled by name on the page;
+/// positions and counts are variables for `calc()`; cells are a family.
 pub fn project(room: &Room, s: &State) -> Projection {
     let b = &s.brain;
     let (sx, sy, sa) = b
         .sighting
         .map_or((-1, -1, -1), |t| (t.at.x, t.at.y, t.age as i32));
     let mut p = Projection::new()
-        .attr("root", "data-running", u8::from(s.running))
-        .attr("root", "data-dropouts", u8::from(s.dropouts))
-        .attr("root", "data-policy", u8::from(s.policy == Policy::Careful))
-        .attr("root", "data-mode", mode_code(b.mode))
-        .attr("root", "data-latched", u8::from(s.latched))
-        .attr("root", "data-attacking", u8::from(attacking(b)))
-        .attr("root", "data-heading", dir_code(b.heading))
-        .attr("root", "data-seen", u8::from(b.sighting.is_some()))
-        .attr("root", "data-fresh", u8::from(sa == 0))
-        .var("root", "--fps", s.fps)
-        .var("root", "--her-x", b.pos.x)
-        .var("root", "--her-y", b.pos.y)
-        .var("root", "--human-x", s.human.x)
-        .var("root", "--human-y", s.human.y)
-        .var("root", "--seen-x", sx)
-        .var("root", "--seen-y", sy)
-        .var("root", "--seen-age", sa)
-        .var("root", "--attacks", s.attacks)
-        .var("root", "--bumps", s.bumps)
-        .var("root", "--cleaned", b.cleaned.len() as u32)
-        .var("root", "--ticks", b.ticks as u32);
+        .set(ui::running.slot(), u8::from(s.running))
+        .set(ui::dropouts.slot(), u8::from(s.dropouts))
+        .set(
+            ui::policy.slot(),
+            if s.policy == Policy::Careful {
+                ui::policy::careful
+            } else {
+                ui::policy::naive
+            },
+        )
+        .set(
+            ui::mode.slot(),
+            match b.mode {
+                Mode::Idle => ui::mode::idle,
+                Mode::Cleaning => ui::mode::cleaning,
+                Mode::Docking => ui::mode::docking,
+                Mode::Stopped { .. } => ui::mode::stopped,
+            },
+        )
+        .set(ui::latched.slot(), u8::from(s.latched))
+        .set(ui::attacking.slot(), u8::from(attacking(b)))
+        .set(
+            ui::heading.slot(),
+            match b.heading {
+                None => ui::heading::none,
+                Some(Dir::N) => ui::heading::north,
+                Some(Dir::E) => ui::heading::east,
+                Some(Dir::S) => ui::heading::south,
+                Some(Dir::W) => ui::heading::west,
+            },
+        )
+        .set(ui::seen.slot(), u8::from(b.sighting.is_some()))
+        .set(ui::fresh.slot(), u8::from(sa == 0))
+        .set(ui::fps.slot(), s.fps)
+        .set(ui::her_x.slot(), b.pos.x)
+        .set(ui::her_y.slot(), b.pos.y)
+        .set(ui::human_x.slot(), s.human.x)
+        .set(ui::human_y.slot(), s.human.y)
+        .set(ui::seen_x.slot(), sx)
+        .set(ui::seen_y.slot(), sy)
+        .set(ui::seen_age.slot(), sa)
+        .set(ui::attacks.slot(), s.attacks)
+        .set(ui::bumps.slot(), s.bumps)
+        .set(ui::cleaned.slot(), b.cleaned.len() as u32)
+        .set(ui::ticks.slot(), b.ticks as u32);
     for c in &room.furniture {
-        p = p.attr(cell_name(*c), "data-furniture", 1u8);
+        p = p.set(ui::cell::furniture.at(cell_index(*c)), 1u8);
     }
-    p = p.attr(cell_name(room.dock), "data-dock", 1u8);
+    p = p.set(ui::cell::dock.at(cell_index(room.dock)), 1u8);
     for c in &b.cleaned {
-        p = p.attr(cell_name(*c), "data-cleaned", 1u8);
+        p = p.set(ui::cell::cleaned.at(cell_index(*c)), 1u8);
     }
     p
 }
@@ -242,6 +267,7 @@ pub fn component() -> Component<App, State> {
         KEY,
         Fold::new(State::new(&room), move |s, i, ev| step(&r1, s, i, ev)),
     )
+    .manifest(&ui::MANIFEST)
     .project(move |s| project(&r2, s))
     .effects(|s| s.brain.desired_effects())
     .simulate(move |s, dt| simulate(&r3, s, dt))
@@ -269,7 +295,7 @@ pub fn effects(s: &State) -> BTreeSet<Effect> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use logfold_core::{Log, Slot, checkpoint_law};
+    use logfold_core::{Log, checkpoint_law};
 
     fn by_name(c: &Component<App, State>, name: &str) -> Ev {
         let id = c.input_names().position(|n| n == name).unwrap();
@@ -294,12 +320,49 @@ mod tests {
     }
 
     #[test]
-    fn the_projection_names_cells() {
+    fn the_projection_uses_the_declared_slots() {
         let c = component();
         let p = (c.project)(&c.fold.run(Log::<Ev>::new().view()));
-        assert_eq!(p.get(Slot::attr("c-0-0", "data-dock")), Some(1.0));
-        assert_eq!(p.get(Slot::attr("c-4-2", "data-furniture")), Some(1.0));
-        assert_eq!(p.get(Slot::attr("c-1-1", "data-cleaned")), None);
-        assert_eq!(p.get(Slot::var("root", "--human-x")), Some(6.0));
+        assert_eq!(
+            p.get(ui::cell::dock.at(cell_index(Cell::new(0, 0)))),
+            Some(1.0)
+        );
+        assert_eq!(
+            p.get(ui::cell::furniture.at(cell_index(Cell::new(4, 2)))),
+            Some(1.0)
+        );
+        assert_eq!(
+            p.get(ui::cell::cleaned.at(cell_index(Cell::new(1, 1)))),
+            None
+        );
+        assert_eq!(p.get(ui::human_x.slot()), Some(6.0));
+        assert_eq!(p.get(ui::mode.slot()), Some(f64::from(ui::mode::idle)));
+        assert_eq!(
+            c.input_names().collect::<Vec<_>>(),
+            ui::INPUTS,
+            "inputs match the manifest"
+        );
+        assert!(
+            c.manifest.is_some(),
+            "the manifest is attached, so ids match the generated page"
+        );
+    }
+
+    /// The page's fragments are generated from the manifest by
+    /// `cargo xtask gen`; this fails when they are stale.
+    #[test]
+    fn the_generated_fragments_are_current() {
+        let www = concat!(env!("CARGO_MANIFEST_DIR"), "/../../www/gen/");
+        let read = |f: &str| std::fs::read_to_string(format!("{www}{f}")).unwrap_or_default();
+        assert_eq!(
+            read("studio.css"),
+            ui::MANIFEST.css(),
+            "run `cargo xtask gen`"
+        );
+        assert_eq!(
+            read("studio.manifest.mjs"),
+            ui::MANIFEST.mjs(),
+            "run `cargo xtask gen`"
+        );
     }
 }

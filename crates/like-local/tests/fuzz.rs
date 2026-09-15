@@ -1,7 +1,7 @@
 //! Random clicks and ticks. Two properties: liked exactly when the click
 //! count is odd, and resuming from any checkpoint equals folding from zero.
 
-use like_local::{Ev, click, like};
+use like_local::{Ev, component};
 use logfold_core::{Event, Expectation, Fold, Log, check_all_prefixes, checkpoint_law};
 use proptest::prelude::*;
 
@@ -14,23 +14,28 @@ fn clicks() -> Fold<Ev, u32> {
 }
 
 fn liked_iff_odd_clicks() -> Expectation<Ev> {
-    Expectation::on("liked_iff_odd_clicks", like().zip(clicks()), |(v, n)| {
-        if v.liked == (n % 2 == 1) {
-            Ok(())
-        } else {
-            Err(format!("liked = {}, clicks = {n}", v.liked))
-        }
-    })
+    Expectation::on(
+        "liked_iff_odd_clicks",
+        component().fold.zip(clicks()),
+        |(v, n)| {
+            if v.liked == (n % 2 == 1) {
+                Ok(())
+            } else {
+                Err(format!("liked = {}, clicks = {n}", v.liked))
+            }
+        },
+    )
 }
 
 fn log() -> impl Strategy<Value = Log<Ev>> {
-    prop::collection::vec(any::<bool>(), 0..32).prop_map(|steps| {
+    let click = component().input_event(0).unwrap();
+    prop::collection::vec(any::<bool>(), 0..32).prop_map(move |steps| {
         let mut ms = 0;
         steps
             .into_iter()
             .map(|is_click| {
                 if is_click {
-                    click()
+                    click.clone()
                 } else {
                     ms += 16;
                     Ev::tick(ms)
@@ -47,7 +52,7 @@ proptest! {
         if let Err(b) = check_all_prefixes(v, &[liked_iff_odd_clicks()]) {
             prop_assert!(false, "{b}\nlog = {log:#?}");
         }
-        if let Err(e) = checkpoint_law(&like(), v) {
+        if let Err(e) = checkpoint_law(&component().fold, v) {
             prop_assert!(false, "{e}\nlog = {log:#?}");
         }
     }

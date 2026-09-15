@@ -165,53 +165,115 @@ step that a model DOM equals the projection at `at`. Neither test needs a
 browser. The browser check is a single question: does the stylesheet render
 the variable, and Chrome says yes.
 
+## The contract, declared once
+
+Targets, slots and inputs used to be strings written twice, in Rust and in
+the page, with nothing checking they agreed. `logfold_core::slots!` is the
+single declaration:
+
+```rust
+logfold_core::slots! {
+    pub mod ui;
+    root {
+        attr running: bool;                                   // data-running, present or absent
+        attr mode: enum { idle, cleaning, docking, stopped };  // data-mode="cleaning"
+        var fps: int = 4;                                      // --fps, @property <integer>, initial 4
+    }
+    family cell((brunhilda::W * brunhilda::H)) { attr cleaned: bool; }   // targets cell-0 … cell-95
+    inputs { run, pause, start, dock, estop, north, east, south, west }
+    consts { room_w: brunhilda::W, room_h: brunhilda::H, cell_px: 40 }
+}
+```
+
+It expands to typed constants, `ui::mode.slot()`, `ui::mode::cleaning`,
+`ui::cell::cleaned.at(i)`, and a `Manifest`. Names are the identifiers as
+written, so what you read in Rust is what you write in CSS.
+
+From the manifest, `cargo xtask gen` writes the page's side into `www/gen/`:
+
+- `<app>.css`: a typed `@property` per variable and the constants on
+  `:root`. Appearance is never generated; the stylesheet stays the
+  designer's. The studio's room is `repeat(var(--room_w), calc(var(--cell_px) * 1px))`.
+- `<app>.manifest.mjs`: names by id, inputs in dispatch order, families
+  and their sizes, constants, and how each slot's number is spelled.
+
+The host interns the manifest's names first, so ids are fixed by the
+declaration and the shim resolves them without asking. The shim spells a
+boolean attribute as present or absent and an enum attribute by its value's
+name, so the studio's stylesheet reads `html[data-mode="cleaning"]` and
+`html[data-running]` rather than `="1"`. Families cross as a target id plus
+an index, and the page names its cells `cell-<i>`.
+
+Two tests guard it: the component's inputs must equal the manifest's, in
+order (the host asserts it), and the generated fragments must equal what
+the manifest produces now (`the_generated_fragments_are_current`), so a
+stale page fails `cargo test` with "run `cargo xtask gen`".
+
+The like button and the counter have no declaration and lose nothing:
+without a manifest the shim asks for names and writes numbers, as before.
+
 ## Adding a component
 
-Four things, in this order, and the counter in `crates/counter` is the
-worked example at about sixty lines:
+Three things are yours: the state, the step, and the projection. One
+declaration generates the rest. The like button, whole:
 
-1. **A domain and a step.** `pub struct Counter; impl Domain for Counter`
-   with the input enum, and `fn step(View, Index, &Ev) -> View`.
-2. **A projection.** `fn project(&View) -> Projection`: numbers on named
-   targets, as variables (`.var("root", "--count", n)`) or attributes
-   (`.attr("root", "data-count", n)`).
-3. **A component value.** `Component::new("counter", fold()).project(project)
-   .input("inc", Cmd::Inc)…`. The names here are the names the skeleton
-   uses.
-4. **An app crate of one line**, `crates/apps/counter-app/src/lib.rs`:
-   `logfold_web::export_component!(CounterApp, counter::Counter, counter::View, counter::component());`
-   which generates the wasm-bindgen class with the whole boundary API on
-   top of the generic `Host`. `scripts/build-www.sh` builds it into
-   `www/pkg/counter-app/`, its own bundle: a page loads only its app.
+```rust
+logfold_core::component! {
+    pub mod ui;
+    domain Like;
+    inputs { toggle => Toggle }
+    root { attr liked: bool; }
+    state View;
+    step = step;
+    project = project;
+}
 
-Then the page:
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct View { pub liked: bool }
+
+pub fn step(v: View, _: u64, ev: &Ev) -> View {
+    match ev {
+        Event::Input { input: Input::Toggle, .. } => View { liked: !v.liked },
+        _ => v,
+    }
+}
+
+pub fn project(v: &View) -> Projection {
+    Projection::new().set(ui::liked.slot(), u8::from(v.liked))
+}
+```
+
+`component!` takes the `slots!` grammar plus four clauses and expands to the
+domain marker and its `Domain` impl, an `Input` enum with one variant per
+`data-on` name, `Ev`, `INPUTS`, and `component()` with the manifest
+attached. Components with a world add `sense T;`, `effect T;`,
+`effects = f;` and `simulate = f;`. Then one line in an app crate,
+`logfold_web::export_component!(LikeApp, like_local::Like, like_local::View, like_local::component());`,
+or `export_raw!` for the raw boundary, and `scripts/build-www.sh` builds it
+into its own bundle.
+
+The page:
 
 ```html
-<button data-on="click:dec">−</button>
-<span data-fold="count"></span>
-<button data-on="click:inc">+</button>
+<button data-fold="like" data-on="click:toggle">like</button>
 ```
 ```css
-@property --count { syntax: "<integer>"; inherits: true; initial-value: 0; }
-html { --count: attr(data-count type(<integer>), 0); }
-[data-fold=count]::before { counter-reset: n var(--count); content: counter(n); }
-.bar i { opacity: calc(0.15 + 0.85 * clamp(0, var(--count) - sibling-index() + 1, 1)); }
-html[data-count="0"] [data-on="click:reset"] { opacity: .4; }
+html[data-liked="1"] [data-fold=like]::before { content: "♥ "; }
 ```
 ```js
-import init, { CounterApp } from "./pkg/counter-app/counter_app.js";
+import init, { LikeApp } from "./pkg/like-app/like_app.js";
 import { mount } from "./logfold.mjs";
-import { timeline } from "./timeline.mjs";
 await init();
-const host = mount(new CounterApp());
-timeline(host, document.getElementById("history"));
+mount(new LikeApp());
 ```
 
-`mount` installs one delegated listener per event type the skeleton
-mentions, resolves `data-on` names to input ids once, and applies patches.
-`timeline` is a second host for the same log. Neither knows what a counter
-is. Two components on one page are two `mount` calls with a `root` option
-each.
+Pass `{ manifest }` from the generated module to `mount` and the shim
+spells booleans by presence and enums by name, `html[data-liked]`; without
+it, numbers, as above. `mount` installs one delegated listener per event
+type the skeleton mentions, resolves `data-on` names to input ids once, and
+applies patches. `timeline` is a second host for the same log. Neither knows
+what a like is. Two components on one page are two `mount` calls with a
+`root` option each.
 
 ## The studio: effects, a simulated world, one log
 

@@ -17,8 +17,8 @@
 use std::collections::BTreeSet;
 
 use logfold_core::{
-    Change, Checkpoints, Component, Domain, Event, Fold, Log, Name, Projection, SlotKind, diff,
-    diff_effects, in_flight,
+    Change, Checkpoints, Component, Domain, Event, Fold, Log, Name, Projection, SlotKind, Target,
+    diff, diff_effects, in_flight,
 };
 #[cfg(feature = "bindgen")]
 use wasm_bindgen::JsValue;
@@ -98,6 +98,19 @@ impl<D: Domain, X: Clone + 'static> Host<D, X> {
             let p = component.project.clone();
             state.clone().map(move |(x, _)| p(x))
         };
+        // A declared contract fixes the ids: the generated page resolves
+        // them from the manifest without asking.
+        let mut names = Names::default();
+        if let Some(m) = component.manifest {
+            let declared: Vec<Name> = component.input_names().collect();
+            assert!(
+                declared == m.inputs,
+                "the component's inputs must match its manifest, in order"
+            );
+            for n in m.names() {
+                names.id(n);
+            }
+        }
         Self {
             component,
             state,
@@ -107,7 +120,7 @@ impl<D: Domain, X: Clone + 'static> Host<D, X> {
             at: 0,
             current: Projection::new(),
             clock: 0,
-            names: Names::default(),
+            names,
             #[cfg(feature = "bindgen")]
             labels: [
                 label("input"),
@@ -136,12 +149,6 @@ impl<D: Domain, X: Clone + 'static> Host<D, X> {
     /// The name behind an id, as bytes in linear memory. For raw hosts.
     pub fn name_str(&self, id: u32) -> Option<Name> {
         self.names.name(id)
-    }
-
-    /// Give `name` an id now, before any patch mentions it. Raw hosts
-    /// intern the input names first so ids `0..inputs` are the inputs.
-    pub fn intern(&mut self, name: Name) -> u32 {
-        self.names.id(name) as u32
     }
 
     /// The component's inputs, by name, in dispatch order.
@@ -197,8 +204,9 @@ impl<D: Domain, X: Clone + 'static> Host<D, X> {
     // ---- output: move the DOM to the projection at index n ----
 
     /// The writes that take the DOM from its current index to `n`, as
-    /// `[target, kind, name, value]` quads: `kind` 0 is a custom property,
-    /// 1 an attribute; `NaN` means "clear".
+    /// `[target, index, kind, name, value]` quintets: `index` is the member
+    /// of a family target or -1; `kind` 0 is a custom property, 1 an
+    /// attribute; `NaN` means "clear".
     ///
     /// The host assumes every patch it returns is applied: that is what
     /// makes the next diff correct. A shim that drops one desynchronises
@@ -285,12 +293,18 @@ impl<D: Domain, X: Clone + 'static> Host<D, X> {
         }
     }
 
-    /// Encode changes as `[target, kind, name, value]` quads; `NaN` clears.
+    /// Encode changes as `[target, index, kind, name, value]`; `NaN` clears.
     fn encode(&mut self, changes: &[Change]) -> Vec<f64> {
-        let mut out = Vec::with_capacity(changes.len() * 4);
+        let mut out = Vec::with_capacity(changes.len() * 5);
         for c in changes {
             let slot = c.slot();
-            out.push(self.names.id(slot.target));
+            let (target, index) = match slot.target {
+                Target::Root => ("root", -1.0),
+                Target::Named(n) => (n, -1.0),
+                Target::Indexed(n, i) => (n, f64::from(i)),
+            };
+            out.push(self.names.id(target));
+            out.push(index);
             out.push(match slot.kind {
                 SlotKind::Var => 0.0,
                 SlotKind::Attr => 1.0,
@@ -388,21 +402,26 @@ mod tests {
     /// Decode a patch back into changes, using the host's own name table.
     fn decode<D: Domain, X: Clone + 'static>(h: &Host<D, X>, patch: &[f64]) -> Vec<Change> {
         patch
-            .chunks(4)
+            .chunks(5)
             .map(|c| {
-                let (target, name) = (
+                let (tname, name) = (
                     h.names.name(c[0] as u32).unwrap(),
-                    h.names.name(c[2] as u32).unwrap(),
+                    h.names.name(c[3] as u32).unwrap(),
                 );
-                let slot = if c[1] == 0.0 {
+                let target = match (tname, c[1]) {
+                    ("root", _) => Target::Root,
+                    (n, i) if i >= 0.0 => Target::Indexed(n, i as u32),
+                    (n, _) => Target::Named(n),
+                };
+                let slot = if c[2] == 0.0 {
                     Slot::var(target, name)
                 } else {
                     Slot::attr(target, name)
                 };
-                if c[3].is_nan() {
+                if c[4].is_nan() {
                     Change::Clear(slot)
                 } else {
-                    Change::Set(slot, c[3])
+                    Change::Set(slot, c[4])
                 }
             })
             .collect()

@@ -9,6 +9,7 @@ members = [
     "crates/studio",
     "crates/logfold-web",
     "crates/apps/*",
+    "crates/xtask",
 ]
 
 [workspace.package]

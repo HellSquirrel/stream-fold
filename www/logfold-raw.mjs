@@ -10,14 +10,13 @@ export async function rawApp(url) {
   const ex = instance.exports;
   const dec = new TextDecoder();
   ex.lf_init();
-  const name = (id) => {
-    const p = ex.lf_name_ptr(id), n = ex.lf_name_len(id);
-    return n ? dec.decode(new Uint8Array(ex.memory.buffer, p, n)) : undefined;
-  };
+  const str = (p, n) => (n ? dec.decode(new Uint8Array(ex.memory.buffer, p, n)) : undefined);
+  const name = (id) => str(ex.lf_name_ptr(id), ex.lf_name_len(id));
+  const input = (i) => str(ex.lf_input_ptr(i), ex.lf_input_len(i));
   // A view, valid until the next call into the module: `mount` applies it synchronously.
   const patch = (n) => new Float64Array(ex.memory.buffer, ex.lf_patch_ptr(), n);
   return {
-    input_names: () => Array.from({ length: ex.lf_input_count() }, (_, i) => name(i)),
+    input_names: () => Array.from({ length: ex.lf_input_count() }, (_, i) => input(i)),
     name,
     dispatch: (i) => patch(ex.lf_dispatch(i)),
     tick: (ms) => patch(ex.lf_tick(ms)),

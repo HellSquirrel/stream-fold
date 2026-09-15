@@ -37,16 +37,35 @@ pub enum SlotKind {
     Attr,
 }
 
-/// One variable or attribute on one target, e.g. `("root", Var, "--liked")`.
+/// Where a slot lives: the document root, an element the skeleton named
+/// with `data-fold="name"`, or member `i` of a family named `name-i`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Target {
+    Root,
+    Named(Name),
+    Indexed(Name, u32),
+}
+
+impl From<&'static str> for Target {
+    fn from(name: &'static str) -> Self {
+        if name == "root" {
+            Target::Root
+        } else {
+            Target::Named(name)
+        }
+    }
+}
+
+/// One variable or attribute on one target, e.g. `(Root, Var, "--liked")`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Slot {
-    pub target: Name,
+    pub target: Target,
     pub kind: SlotKind,
     pub name: Name,
 }
 
 impl Slot {
-    pub const fn var(target: Name, name: Name) -> Self {
+    pub const fn var(target: Target, name: Name) -> Self {
         Self {
             target,
             kind: SlotKind::Var,
@@ -54,7 +73,7 @@ impl Slot {
         }
     }
 
-    pub const fn attr(target: Name, name: Name) -> Self {
+    pub const fn attr(target: Target, name: Name) -> Self {
         Self {
             target,
             kind: SlotKind::Attr,
@@ -73,19 +92,24 @@ impl Projection {
         Self::default()
     }
 
-    /// Builder: a custom property on a target.
-    pub fn var(mut self, target: Name, name: Name, value: impl Into<f64>) -> Self {
-        self.set(Slot::var(target, name), value.into());
+    /// Builder: a custom property on a target. `"root"` is the root.
+    pub fn var(self, target: impl Into<Target>, name: Name, value: impl Into<f64>) -> Self {
+        self.set(Slot::var(target.into(), name), value)
+    }
+
+    /// Builder: an attribute on a target. `"root"` is the root.
+    pub fn attr(self, target: impl Into<Target>, name: Name, value: impl Into<f64>) -> Self {
+        self.set(Slot::attr(target.into(), name), value)
+    }
+
+    /// Builder: any slot, typically one declared with `slots!`.
+    pub fn set(mut self, slot: Slot, value: impl Into<f64>) -> Self {
+        self.put(slot, value.into());
         self
     }
 
-    /// Builder: an attribute on a target.
-    pub fn attr(mut self, target: Name, name: Name, value: impl Into<f64>) -> Self {
-        self.set(Slot::attr(target, name), value.into());
-        self
-    }
-
-    pub fn set(&mut self, slot: Slot, value: f64) {
+    /// Write one slot in place.
+    pub fn put(&mut self, slot: Slot, value: f64) {
         assert!(
             !value.is_nan(),
             "NaN is the wire encoding of a cleared slot"
@@ -151,7 +175,7 @@ pub fn diff(from: &Projection, to: &Projection) -> Vec<Change> {
 pub fn apply(p: &mut Projection, changes: &[Change]) {
     for c in changes {
         match *c {
-            Change::Set(slot, value) => p.set(slot, value),
+            Change::Set(slot, value) => p.put(slot, value),
             Change::Clear(slot) => p.clear(slot),
         }
     }
@@ -175,9 +199,9 @@ mod tests {
         assert_eq!(
             d,
             vec![
-                Change::Set(Slot::var("root", "--new"), 4.0),
-                Change::Set(Slot::var("root", "--y"), 5.0),
-                Change::Clear(Slot::var("root", "--gone")),
+                Change::Set(Slot::var(Target::Root, "--new"), 4.0),
+                Change::Set(Slot::var(Target::Root, "--y"), 5.0),
+                Change::Clear(Slot::var(Target::Root, "--gone")),
             ]
         );
         assert!(diff(&a, &a).is_empty());
@@ -189,8 +213,8 @@ mod tests {
             .var("root", "x", 1.0)
             .attr("root", "x", 2.0);
         assert_eq!(p.len(), 2);
-        assert_eq!(p.get(Slot::var("root", "x")), Some(1.0));
-        assert_eq!(p.get(Slot::attr("root", "x")), Some(2.0));
+        assert_eq!(p.get(Slot::var(Target::Root, "x")), Some(1.0));
+        assert_eq!(p.get(Slot::attr(Target::Root, "x")), Some(2.0));
     }
 
     #[test]

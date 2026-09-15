@@ -67,20 +67,42 @@ fn server() -> Fold<'static, Ev, Server> {
 
 // ---------- expectations (each one fold, one pass) ----------
 
-/// A `Post` is desired exactly when the user wants something unconfirmed
-/// and nothing is in flight, and it carries the wanted value.
+/// Desired effects are level-triggered: while a request is pending it is
+/// desired exactly as started; when idle and dirty, one fresh `Post` for
+/// the wanted value; otherwise nothing.
 fn effects_match_pending() -> Expectation<'static, Ev> {
     Expectation::on("effects_match_pending", like_button(), |v| {
         let fx = desired_effects(v);
-        let want_request = v.dirty() && v.pending.is_none();
-        match (want_request, fx.iter().next()) {
-            (false, None) => Ok(()),
-            (true, Some(Effect::Post { intent, .. })) if fx.len() == 1 && *intent == v.liked => {
-                Ok(())
+        let ok = match (&v.pending, v.dirty()) {
+            (Some(p), _) => fx.len() == 1 && fx.contains(&p.effect),
+            (None, true) => {
+                fx.len() == 1
+                    && matches!(fx.iter().next(), Some(Effect::Post { intent, .. }) if *intent == v.liked)
             }
-            _ => Err(format!("view = {v:?}, effects = {fx:?}")),
+            (None, false) => fx.is_empty(),
+        };
+        if ok {
+            Ok(())
+        } else {
+            Err(format!("view = {v:?}, effects = {fx:?}"))
         }
     })
+}
+
+/// Everything the host has in flight is still desired. With the diff
+/// model this is what "nothing to cancel" means at every prefix.
+fn in_flight_is_desired() -> Expectation<'static, Ev> {
+    Expectation::on(
+        "in_flight_is_desired",
+        like_button().zip(in_flight::<LikeButton>()),
+        |(v, fx)| {
+            let want = desired_effects(v);
+            match fx.iter().find(|e| !want.contains(e)) {
+                None => Ok(()),
+                Some(e) => Err(format!("in flight but no longer desired: {e:?}")),
+            }
+        },
+    )
 }
 
 /// The fold's idea of "in flight" agrees with the core's `in_flight` fold.
@@ -92,7 +114,7 @@ fn pending_matches_in_flight() -> Expectation<'static, Ev> {
             let reqs: Vec<ReqId> = fx.iter().filter_map(|e| e.req()).collect();
             match (&v.pending, reqs.as_slice()) {
                 (None, []) => Ok(()),
-                (Some(p), [r]) if p.req == *r => Ok(()),
+                (Some(p), [r]) if p.req() == *r => Ok(()),
                 _ => Err(format!("pending = {:?}, in flight = {reqs:?}", v.pending)),
             }
         },
@@ -146,6 +168,7 @@ fn client_server_agree() -> Expectation<'static, Ev> {
 fn expectations() -> Vec<Expectation<'static, Ev>> {
     vec![
         effects_match_pending(),
+        in_flight_is_desired(),
         pending_matches_in_flight(),
         started_only_when_desired(),
         client_server_agree(),
@@ -192,24 +215,23 @@ impl Played {
         check_all_prefixes(v, &expectations()).map_err(|b| b.to_string())?;
         checkpoint_law(&like_button(), v)?;
         checkpoint_law(&server(), v)?;
-        nothing_to_start_at_frame_boundaries(self)
+        host_quiescent_at_frame_boundaries(self)
     }
 }
 
-/// At every frame boundary there is nothing left to *start*. Cancels may
-/// legitimately remain until the world answers. This is a property of the
-/// host, not of the log, so it is checked at the boundaries the generator
-/// recorded rather than on every prefix: a prefix ending on the world's
-/// answer is mid-frame.
-fn nothing_to_start_at_frame_boundaries(p: &Played) -> Result<(), String> {
+/// At every frame boundary the host is quiescent: nothing left to start
+/// and nothing to cancel. This is a property of the host, not of the log,
+/// so it is checked at the boundaries the generator recorded rather than
+/// on every prefix: a prefix ending on the world's answer is mid-frame.
+fn host_quiescent_at_frame_boundaries(p: &Played) -> Result<(), String> {
     let (want, fx) = (desired(), in_flight::<LikeButton>());
     for &n in &p.frames {
         let log: LogView<'_, Ev> = p.log.prefix(n);
         let d = diff_effects(&want.run(log), &fx.run(log));
-        if !d.start.is_empty() {
+        if !d.start.is_empty() || !d.cancel.is_empty() {
             return Err(format!(
-                "after frame ending at {n}: host left {:?} to start",
-                d.start
+                "after frame ending at {n}: host left {:?} to start and {:?} to cancel",
+                d.start, d.cancel
             ));
         }
     }
@@ -357,11 +379,13 @@ fn adversarial_log() -> impl Strategy<Value = Played> {
 
 // ---------- tests ----------
 
-/// The nine-event log the fuzzer shrank the original fold's failure to:
-/// three clicks with requests still in flight, answered out of order.
-/// Kept as the steps that produced it, so it replays against any host.
+/// The steps the fuzzer shrank the original fold's failure to. Against
+/// that fold they produced three concurrent requests answered out of
+/// order; against this one the clicks that land mid-flight coalesce and
+/// the same steps must be harmless. The original nine-event log itself is
+/// not replayable, because its `Started` events were that host's output.
 #[test]
-fn regression_out_of_order_answers_with_concurrent_requests() {
+fn regression_clicks_during_flight_coalesce() {
     let p = play(vec![
         Step::Click,
         Step::Click,

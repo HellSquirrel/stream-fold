@@ -132,13 +132,15 @@ impl<'a, E: 'a, X: Clone + 'a, S: 'a> Fold<'a, E, X, S> {
 
     /// Run two folds over the same events in one pass.
     ///
-    /// Both must start at the same index; zipping folds resumed from
-    /// different checkpoints is a bug, and is caught in debug builds.
+    /// Both must start at the same index. Zipping folds resumed from
+    /// different checkpoints is a construction-time programmer error and
+    /// panics in every build: the alternative is a pair whose halves
+    /// silently describe different prefixes of the log.
     pub fn zip<Y: Clone + 'a, T: 'a>(
         self,
         other: Fold<'a, E, Y, T>,
     ) -> Fold<'a, E, (X, Y), (S, T)> {
-        debug_assert_eq!(
+        assert_eq!(
             self.skip, other.skip,
             "zip of folds resumed at different indices"
         );
@@ -148,7 +150,7 @@ impl<'a, E: 'a, X: Clone + 'a, S: 'a> Fold<'a, E, X, S> {
             init: (self.init, other.init),
             step: Rc::new(move |(x, y), i, e| (sx(x, i, e), sy(y, i, e))),
             done: Rc::new(move |(x, y)| (dx(x), dy(y))),
-            skip: self.skip.max(other.skip),
+            skip: self.skip,
         }
     }
 
@@ -362,6 +364,27 @@ mod tests {
             vec![2, 3, 4]
         );
         assert_eq!(ck.run(log.prefix(1)), (2, 2));
+    }
+
+    #[test]
+    fn zip_of_aligned_resumed_folds_keeps_the_skip() {
+        let log: Log<Ev> = (1..=4).map(Ev::tick).collect();
+        // A plain fold and a mapped one, both resumed at the same index.
+        let (a, b) = (ticks(), ticks().map(|(n, _)| *n));
+        let ra = a.from(a.state(log.prefix(2)), 2);
+        let rb = b.from(b.state(log.prefix(2)), 2);
+        let z = ra.zip(rb);
+        assert_eq!(z.skip(), 2);
+        assert_eq!(z.run(log.view()), ((4, 4), 4));
+    }
+
+    #[test]
+    #[should_panic(expected = "zip of folds resumed at different indices")]
+    fn zip_of_misaligned_folds_panics() {
+        let log: Log<Ev> = (1..=4).map(Ev::tick).collect();
+        let f = ticks();
+        let resumed = f.from(f.state(log.prefix(2)), 2);
+        let _ = resumed.zip(ticks());
     }
 
     #[test]

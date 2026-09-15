@@ -8,7 +8,9 @@
 //! nine-event log: three clicks while earlier requests were still in
 //! flight, answered out of order, so the server's final state was the
 //! intent of whichever request it happened to answer last. That was the
-//! M0 exit criterion, and it is now a regression test.
+//! M0 exit criterion. The steps that produced that log replay as a
+//! regression test; the log itself cannot, because its `Started` events
+//! were the old host's output.
 //!
 //! # This version
 //!
@@ -84,9 +86,26 @@ pub struct View {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Pending {
-    pub req: ReqId,
+    /// The request exactly as the host started it. Kept whole so that
+    /// what the fold desires while in flight can never drift from what
+    /// the host recorded.
+    pub effect: Effect,
+}
+
+impl Pending {
+    pub fn req(&self) -> ReqId {
+        self.effect
+            .req()
+            .expect("a pending request always has an id")
+    }
+
     /// The value we asked the server to store.
-    pub intent: bool,
+    pub fn intent(&self) -> bool {
+        match self.effect {
+            Effect::Post { intent, .. } => intent,
+            Effect::Ping { .. } => unreachable!("a ping is never pending"),
+        }
+    }
 }
 
 impl View {
@@ -110,18 +129,17 @@ pub fn step(mut v: View, index: Index, ev: &Ev) -> View {
             v.wanted_since = index;
         }
         Event::Started {
-            effect: Effect::Post { req, intent, .. },
+            effect: effect @ Effect::Post { .. },
             ..
         } => {
             v.pending = Some(Pending {
-                req: *req,
-                intent: *intent,
+                effect: effect.clone(),
             });
         }
         Event::Io { req, res, .. } => {
-            if let Some(p) = v.pending.take_if(|p| p.req == *req) {
+            if let Some(p) = v.pending.take_if(|p| p.req() == *req) {
                 match res {
-                    IoResult::Done => v.confirmed = p.intent,
+                    IoResult::Done => v.confirmed = p.intent(),
                     IoResult::Failed | IoResult::Cancelled => v.liked = v.confirmed,
                 }
             }
@@ -137,18 +155,22 @@ pub fn like_button() -> Fold<'static, Ev, View> {
     Fold::new(View::default(), step).scoped(in_scope)
 }
 
-/// The set of effects that should be in flight for a view. At most one:
-/// the wanted value, once nothing else is in flight.
+/// The set of effects that should be in flight for a view. At most one,
+/// and level-triggered: while a request is in flight it is desired as is,
+/// so the host's diff has nothing to start and nothing to cancel; once
+/// nothing is in flight and the user wants something unconfirmed, a fresh
+/// `Post` for the wanted value.
 pub fn desired_effects(v: &View) -> BTreeSet<Effect> {
-    let mut out = BTreeSet::new();
-    if v.dirty() && v.pending.is_none() {
-        out.insert(Effect::Post {
+    match &v.pending {
+        Some(p) => [p.effect.clone()].into(),
+        None if v.dirty() => [Effect::Post {
             req: v.wanted_since,
             intent: v.liked,
             idem: IdemKey::new(key(), v.wanted_since),
-        });
+        }]
+        .into(),
+        None => BTreeSet::new(),
     }
-    out
 }
 
 /// Derived projection: desired effects as a fold.
@@ -182,11 +204,13 @@ pub mod events {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use logfold_core::{Log, checkpoint_law};
+    use logfold_core::{Log, checkpoint_law, diff_effects, in_flight};
 
-    /// An honest host: start whatever is desired right now.
+    /// An honest host: start whatever is desired and not already in flight.
     fn host(log: &mut Log<Ev>) {
-        for fx in desired().run(log.view()) {
+        let v = log.view();
+        let d = diff_effects(&desired().run(v), &in_flight::<LikeButton>().run(v));
+        for fx in d.start {
             log.append(events::started(fx));
         }
     }

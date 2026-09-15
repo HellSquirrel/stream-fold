@@ -38,12 +38,12 @@ shows which one the scrubber resumed from.
 - [x] `Fold` as a value (`foldl` style): `run`, `scan`, `map`, `zip`, `scoped`; a checkpoint is `fold.from(state, upto)`; `checkpoint_law` checks resume == run at every split; ordered `Checkpoints` store with nearest-at-or-before lookup
 - [x] Expectations built from a fold + predicate (`Expectation::on`): all-prefix mode is one `scan`; `raw` escape hatch for non-fold properties
 - [x] Events split by origin: `Pure` (input), `Io` (world), `Started` (host bookkeeping); `Log::inputs()` seeds re-execution
-- [x] Effects as desired-set projection; `InFlight` fold (started − answered, result-less effects resolve on start); host diff = desired − in-flight
+- [x] Effects as a level-triggered desired-set projection; `in_flight` fold (started − answered; result-less effects stay as the record); the host diff runs both ways: start = desired − in-flight, cancel = in-flight − desired
 - [x] Expectations: guard mode and all-prefix (fuzz) mode
 - [x] Like-button fold + benign proptest harness
 - [x] Adversarial generators (out-of-order answers, `Failed`/`Cancelled` mid-flight, duplicate and bogus answers, clock jumps)
 - [x] Client/server agreement expectation (the test plays the server as a fold)
-- [x] **Exit criterion met.** The fuzzer broke the naive one-request-per-click fold with a 9-event log (three concurrent requests, answered out of order) and shrank it. The fold now coalesces clicks into one in-flight request; the shrunk sequence is a regression test.
+- [x] **Exit criterion met.** The fuzzer broke the naive one-request-per-click fold with a 9-event log (three concurrent requests, answered out of order) and shrank it. The fold now coalesces clicks into one in-flight request; the steps that produced the log replay as a regression test (the log itself cannot, since its `Started` events were the old host's output).
 
 - [x] Browser host: `like-local` in WASM with a scrubbable history (`crates/logfold-web`)
 - [x] Events are domain-parametric (`Domain` trait: `Input`, `Sense`, `Effect`); `Sense` is unsolicited world input; effects live in each domain

@@ -261,7 +261,8 @@ pub struct Brain {
     pub cleaned: BTreeSet<Cell>,
     pub sighting: Option<Sighting>,
     pub ticks: u64,
-    /// Bumps so far. The naive policy's only source of variety.
+    /// Bumps so far, at most one per frame. With `ticks`, the naive
+    /// policy's source of variety.
     pub bumps: u64,
     /// She gave up on the cells around this sighting at this tick, and is
     /// waiting at the dock. Cleared when you are seen somewhere else or
@@ -311,9 +312,10 @@ impl Brain {
     }
 }
 
-/// Two vacuums. `Naive` has no map: it drives until it bumps, turns
-/// clockwise, and only refuses the one cell it last saw you in. The
-/// fuzzer breaks it. `Careful` knows the room, plans the nearest uncleaned
+/// Two vacuums. `Naive` has no map: it drives until it bumps, turns left
+/// or right, turns every so often anyway, and only refuses the one cell
+/// it last saw you in. Which way it turns is pseudo-random but a pure
+/// function of the log (see `wander`). The fuzzer breaks it. `Careful` knows the room, plans the nearest uncleaned
 /// cell by breadth-first search, treats the ring around a fresh sighting
 /// as wall, and goes back to the dock to wait when that ring holds the
 /// only cells left. It survives.
@@ -489,6 +491,7 @@ pub fn step(room: &Room, policy: Policy, mut b: Brain, index: Index, ev: &Ev) ->
             if b.mode == Mode::Docking && b.pos == room.dock {
                 b.mode = Mode::Idle;
             }
+            b.bumps += u64::from(b.bumped); // at most one per frame, like the sim
             b.heading = policy.choose(room, &b);
             b.bumped = false;
             b.ticks += 1;
@@ -593,10 +596,12 @@ mod tests {
             );
         }
         assert!(sim.bumps > 0, "she should have hit the east wall by now");
+        let s = b.run(log.view());
+        assert_eq!(s.pos, sim.her, "and still know where she is");
         assert_eq!(
-            b.run(log.view()).pos,
-            sim.her,
-            "and still know where she is"
+            s.bumps,
+            u64::from(sim.bumps),
+            "and count her bumps like the sim does"
         );
     }
 

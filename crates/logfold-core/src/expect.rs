@@ -53,14 +53,14 @@ pub enum Mode {
     AllPrefixes,
 }
 
-type Check<'a, E> = Rc<dyn for<'l> Fn(LogView<'l, E>, Mode) -> Result<(), Breach> + 'a>;
+type Check<E> = Rc<dyn for<'l> Fn(LogView<'l, E>, Mode) -> Result<(), Breach>>;
 
-pub struct Expectation<'a, E> {
+pub struct Expectation<E> {
     pub name: &'static str,
-    check: Check<'a, E>,
+    check: Check<E>,
 }
 
-impl<E> Clone for Expectation<'_, E> {
+impl<E> Clone for Expectation<E> {
     fn clone(&self) -> Self {
         Self {
             name: self.name,
@@ -77,12 +77,12 @@ fn breach_at(name: &'static str, prefix_end: usize, msg: String) -> Breach {
     }
 }
 
-impl<'a, E: 'a> Expectation<'a, E> {
+impl<E: 'static> Expectation<E> {
     /// A predicate on a fold's output. All-prefix mode is a single scan.
-    pub fn on<X: Clone + 'a, S: 'a>(
+    pub fn on<X: Clone + 'static, S: 'static>(
         name: &'static str,
-        fold: Fold<'a, E, X, S>,
-        pred: impl Fn(&S) -> Result<(), String> + 'a,
+        fold: Fold<E, X, S>,
+        pred: impl Fn(&S) -> Result<(), String> + 'static,
     ) -> Self {
         let check = move |log: LogView<'_, E>, mode: Mode| match mode {
             Mode::Guard => pred(&fold.run(log)).map_err(|m| breach_at(name, log.end(), m)),
@@ -101,7 +101,7 @@ impl<'a, E: 'a> Expectation<'a, E> {
     /// every prefix, so this is quadratic; prefer [`Expectation::on`].
     pub fn raw(
         name: &'static str,
-        f: impl for<'l> Fn(LogView<'l, E>) -> Result<(), String> + 'a,
+        f: impl for<'l> Fn(LogView<'l, E>) -> Result<(), String> + 'static,
     ) -> Self {
         let check = move |log: LogView<'_, E>, mode: Mode| match mode {
             Mode::Guard => f(log).map_err(|m| breach_at(name, log.end(), m)),
@@ -114,23 +114,22 @@ impl<'a, E: 'a> Expectation<'a, E> {
             check: Rc::new(check),
         }
     }
+}
 
+impl<E> Expectation<E> {
     pub fn check(&self, log: LogView<'_, E>, mode: Mode) -> Result<(), Breach> {
         (self.check)(log, mode)
     }
 }
 
 /// Guard mode: evaluate every expectation against the full view once.
-pub fn guard<E>(log: LogView<'_, E>, exps: &[Expectation<'_, E>]) -> Result<(), Breach> {
+pub fn guard<E>(log: LogView<'_, E>, exps: &[Expectation<E>]) -> Result<(), Breach> {
     exps.iter().try_for_each(|e| e.check(log, Mode::Guard))
 }
 
 /// Fuzz mode: evaluate every expectation against every prefix and report
 /// the earliest breach per expectation, first expectation wins.
-pub fn check_all_prefixes<E>(
-    log: LogView<'_, E>,
-    exps: &[Expectation<'_, E>],
-) -> Result<(), Breach> {
+pub fn check_all_prefixes<E>(log: LogView<'_, E>, exps: &[Expectation<E>]) -> Result<(), Breach> {
     exps.iter()
         .try_for_each(|e| e.check(log, Mode::AllPrefixes))
 }
@@ -140,7 +139,7 @@ mod tests {
     use super::*;
     use crate::log::Log;
 
-    fn at_most_one_event() -> Expectation<'static, u8> {
+    fn at_most_one_event() -> Expectation<u8> {
         Expectation::on("at_most_one", Fold::new(0usize, |n, _, _| n + 1), |n| {
             if *n <= 1 {
                 Ok(())

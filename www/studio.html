@@ -1,0 +1,125 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>LogFold: studio</title>
+<style>
+  /* Everything visible follows from numbers the host writes on <html> and on
+     the 96 cells. Booleans and enums arrive as attributes (selectors), positions
+     and counts as variables (calc). Motion is CSS transitions on those. */
+  @property --her-x { syntax: "<integer>"; inherits: true; initial-value: 0; }
+  @property --her-y { syntax: "<integer>"; inherits: true; initial-value: 0; }
+  @property --human-x { syntax: "<integer>"; inherits: true; initial-value: 0; }
+  @property --human-y { syntax: "<integer>"; inherits: true; initial-value: 0; }
+  @property --seen-x { syntax: "<integer>"; inherits: true; initial-value: -1; }
+  @property --seen-y { syntax: "<integer>"; inherits: true; initial-value: -1; }
+  @property --seen-age { syntax: "<integer>"; inherits: true; initial-value: -1; }
+  @property --cleaned { syntax: "<integer>"; inherits: true; initial-value: 0; }
+  @property --bumps { syntax: "<integer>"; inherits: true; initial-value: 0; }
+  @property --attacks { syntax: "<integer>"; inherits: true; initial-value: 0; }
+  @property --ticks { syntax: "<integer>"; inherits: true; initial-value: 0; }
+  @property --fps { syntax: "<integer>"; inherits: true; initial-value: 4; }
+
+  body { font: 15px/1.5 system-ui, sans-serif; max-width: 44rem; margin: 2rem auto; padding: 0 1rem; color: #222; }
+  button { font: inherit; padding: .35rem .7rem; margin-right: .25rem; }
+  nav a { margin-right: 1rem; }
+  .muted { color: #777; font-size: .9rem; }
+  .panel { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; }
+  .panel .group { display: inline-flex; }
+
+  /* the panel lights whatever the state says */
+  html[data-running="1"] [data-on="click:run"], html[data-running="0"] [data-on="click:pause"],
+  html[data-policy="0"] [data-on="click:naive"], html[data-policy="1"] [data-on="click:careful"],
+  html[data-dropouts="1"] [data-on="click:dropouts"] { background: #4a90e2; color: #fff; border-color: #4a90e2; }
+  html[data-latched="1"] [data-on="click:estop"] { background: #d32f2f; color: #fff; border-color: #d32f2f; }
+
+  /* the room: 96 cells that always exist; state paints them */
+  .room { position: relative; display: grid; grid-template-columns: repeat(12, 40px); grid-auto-rows: 40px; width: 480px; border: 1px solid #bbb; background: #e9e6df; }
+  .cell { box-sizing: border-box; border: 1px solid rgba(0,0,0,.08); transition: background .3s; }
+  .cell[data-cleaned="1"] { background: #bfe3c0; }
+  .cell[data-furniture="1"] { background: #8d6e63; }
+  .cell[data-dock="1"] { box-shadow: inset 0 0 0 3px #4a90e2; }
+
+  /* actors: one cell each, positioned by variables; the transition is the gliding */
+  .actor { position: absolute; left: 0; top: 0; width: 40px; height: 40px; pointer-events: none; transition: translate .25s ease-out, opacity .25s; }
+  [data-fold=her] { translate: calc(var(--her-x) * 40px) calc(var(--her-y) * 40px); }
+  [data-fold=her]::before { content: ""; position: absolute; inset: 6px; border-radius: 50%; background: #333; transition: background .2s; }
+  html[data-mode="3"] [data-fold=her]::before { background: #999; }
+  html[data-attacking="1"] [data-fold=her]::before { background: #d32f2f; }
+  [data-fold=her]::after { content: "▲"; position: absolute; inset: 0; display: grid; place-items: center; color: #fff; font-size: 11px; transition: rotate .2s; }
+  html[data-heading="-1"] [data-fold=her]::after { content: ""; }
+  html[data-heading="1"] [data-fold=her]::after { rotate: 90deg; }
+  html[data-heading="2"] [data-fold=her]::after { rotate: 180deg; }
+  html[data-heading="3"] [data-fold=her]::after { rotate: 270deg; }
+  [data-fold=human] { translate: calc(var(--human-x) * 40px) calc(var(--human-y) * 40px); }
+  [data-fold=human]::before { content: ""; position: absolute; inset: 8px; border-radius: 50%; background: #2196f3; }
+
+  /* what she knows: the last sighting fades with age; the ring while it is fresh and she is careful */
+  [data-fold=seen] { translate: calc(var(--seen-x) * 40px) calc(var(--seen-y) * 40px); opacity: clamp(0.15, 1 - var(--seen-age) * 0.25, 1); }
+  html[data-seen="0"] [data-fold=seen] { opacity: 0; }
+  [data-fold=seen]::before { content: ""; position: absolute; inset: 12px; border-radius: 50%; border: 2px dashed #2196f3; }
+  [data-fold=ring] { position: absolute; left: -40px; top: -40px; width: 120px; height: 120px; box-sizing: border-box; pointer-events: none;
+                     translate: calc(var(--seen-x) * 40px) calc(var(--seen-y) * 40px); border: 2px dashed rgba(211,47,47,.7); opacity: 0; transition: translate .25s ease-out, opacity .25s; }
+  html[data-policy="1"][data-fresh="1"] [data-fold=ring] { opacity: 1; }
+
+  /* status as text: counters from variables, the mode from an attribute */
+  .status span[style]::before { counter-reset: n var(--v); content: counter(n); }
+  html[data-mode="0"] [data-fold=mode]::before { content: "idle"; }
+  html[data-mode="1"] [data-fold=mode]::before { content: "cleaning"; }
+  html[data-mode="2"] [data-fold=mode]::before { content: "docking"; }
+  html[data-mode="3"] [data-fold=mode]::before { content: "stopped"; }
+  html[data-latched="1"] [data-fold=mode]::after { content: " · motors latched"; color: #d32f2f; }
+</style>
+
+<nav><a href="index.html">like</a><a href="like-raw.html">like (raw)</a><a href="counter.html">counter</a><a href="studio.html">studio</a></nav>
+<h1>Brunhilda's studio</h1>
+<p class="muted">You are the blue dot; arrow keys move you, one input each. <em>run</em> lets time pass; <em>space</em> is one frame. Everything on this page, you included, is a fold over one log: drag the slider to replay the session.</p>
+
+<div class="panel">
+  <span class="group"><button data-on="click:run">run</button><button data-on="click:pause">pause</button></span>
+  <span class="group"><button data-on="click:slower">slower</button><button data-on="click:faster">faster</button></span>
+  <span class="group"><button data-on="click:naive">naive</button><button data-on="click:careful">careful</button></span>
+  <button data-on="click:dropouts">dropouts</button>
+  <span class="group"><button data-on="click:start">start</button><button data-on="click:dock">dock</button><button data-on="click:estop">e-stop</button></span>
+</div>
+
+<div class="room" id="room">
+  <i data-fold="ring"></i>
+  <i data-fold="seen" class="actor"></i>
+  <i data-fold="human" class="actor"></i>
+  <i data-fold="her" class="actor"></i>
+</div>
+<p class="status"><span data-fold="mode"></span> · cleaned <span style="--v: var(--cleaned)"></span> / 89 · bumps <span style="--v: var(--bumps)"></span> · attacks <span style="--v: var(--attacks)"></span> · ticks <span style="--v: var(--ticks)"></span> · <span style="--v: var(--fps)"></span> fps</p>
+
+<h2>History</h2>
+<div id="history"></div>
+
+<script type="module">
+  import init, { StudioApp } from "./pkg/studio-app/studio_app.js";
+  import { mount } from "./logfold.mjs";
+  import { timeline } from "./timeline.mjs";
+  await init();
+
+  // The skeleton's 96 cells: generated once, before mount. Still static; just not typed by hand.
+  const room = document.getElementById("room");
+  const cells = document.createDocumentFragment();
+  for (let y = 0; y < 8; y++) for (let x = 0; x < 12; x++) {
+    const i = document.createElement("i"); i.className = "cell"; i.dataset.fold = `c-${x}-${y}`; cells.append(i);
+  }
+  room.prepend(cells);
+
+  const host = mount(new StudioApp());
+  timeline(host, document.getElementById("history"));
+
+  // inputs the skeleton cannot express with data-on: keys
+  const keys = { ArrowUp: "north", ArrowRight: "east", ArrowDown: "south", ArrowLeft: "west" };
+  document.addEventListener("keydown", (e) => {
+    if (e.key in keys) { e.preventDefault(); host.dispatch(keys[e.key]); }
+    if (e.key === " ") { e.preventDefault(); host.frame(1000 / (host.vars.get("--fps") || 4)); }
+  });
+
+  // the clock: while the state says running, one frame per 1/fps seconds
+  (function loop() {
+    const fps = host.vars.get("--fps") || 4;
+    if (host.vars.get("data-running") === 1) host.frame(1000 / fps);
+    setTimeout(loop, 1000 / fps);
+  })();
+</script>

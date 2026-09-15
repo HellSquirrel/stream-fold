@@ -38,8 +38,39 @@ pub struct Frame {
     pub dt: u64,
 }
 
+// ---------- the world's rules, pure, shared with any host that simulates her ----------
+
+/// The human's move: never into furniture or walls, never onto her.
+pub fn human_move(room: &Room, human: Cell, her: Cell, d: Dir) -> Cell {
+    let t = human.step(d);
+    if room.free(t) && t != her { t } else { human }
+}
+
+/// Where she ends the frame given her heading, and whether she bumped.
+/// A latched motor does not move.
+pub fn advance(room: &Room, her: Cell, heading: Option<Dir>, latched: bool) -> (Cell, bool) {
+    match heading {
+        Some(d) if !latched => {
+            let t = her.step(d);
+            if room.free(t) {
+                (t, false)
+            } else {
+                (her, true)
+            }
+        }
+        _ => (her, false),
+    }
+}
+
+/// What her sensor reports about the human at the end of a frame:
+/// reliable within `RELIABLE_RANGE`, flaky out to `FLAKY_RANGE`.
+pub fn sighting(her: Cell, human: Cell, dropout: bool) -> Option<Cell> {
+    let dist = her.dist(human);
+    (dist <= crate::RELIABLE_RANGE || (dist <= crate::FLAKY_RANGE && !dropout)).then_some(human)
+}
+
 /// Her brain zipped with the in-flight set: one fold, one checkpoint.
-fn host_fold<'a>(brain: &Fold<'a, Ev, Brain>) -> Fold<'a, Ev, HostState> {
+fn host_fold(brain: &Fold<Ev, Brain>) -> Fold<Ev, HostState> {
     brain.clone().zip(in_flight::<Vacuum>())
 }
 
@@ -59,16 +90,16 @@ impl Sim {
     }
 
     /// Her brain as of the end of `log`, resumed from the last checkpoint.
-    pub fn brain_now(&self, log: &Log<Ev>, brain: &Fold<'_, Ev, Brain>) -> Brain {
+    pub fn brain_now(&self, log: &Log<Ev>, brain: &Fold<Ev, Brain>) -> Brain {
         self.host_now(log, brain).0
     }
 
-    fn host_now(&self, log: &Log<Ev>, brain: &Fold<'_, Ev, Brain>) -> HostState {
+    fn host_now(&self, log: &Log<Ev>, brain: &Fold<Ev, Brain>) -> HostState {
         self.checkpoints
             .output_at(&host_fold(brain), log.view(), log.len())
     }
 
-    fn checkpoint(&mut self, log: &Log<Ev>, brain: &Fold<'_, Ev, Brain>) {
+    fn checkpoint(&mut self, log: &Log<Ev>, brain: &Fold<Ev, Brain>) {
         let n = log.len();
         let state = self.host_now(log, brain);
         self.checkpoints = Checkpoints::new();
@@ -76,7 +107,7 @@ impl Sim {
     }
 
     /// A command from the owner. Appends the input, then lets the host act.
-    pub fn command(&mut self, log: &mut Log<Ev>, brain: &Fold<'_, Ev, Brain>, cmd: Cmd) {
+    pub fn command(&mut self, log: &mut Log<Ev>, brain: &Fold<Ev, Brain>, cmd: Cmd) {
         log.append(events::cmd(cmd));
         if cmd == Cmd::Start {
             self.latched = false;
@@ -86,39 +117,27 @@ impl Sim {
 
     /// One frame: human moves, she moves, the world reports, time ticks,
     /// the host acts. Returns true if she ended the frame in the human's cell.
-    pub fn frame(&mut self, log: &mut Log<Ev>, brain: &Fold<'_, Ev, Brain>, f: Frame) -> bool {
+    pub fn frame(&mut self, log: &mut Log<Ev>, brain: &Fold<Ev, Brain>, f: Frame) -> bool {
         // 1. the human moves, never onto her.
         if let Some(d) = f.human {
-            let t = self.human.step(d);
-            if self.room.free(t) && t != self.her {
-                self.human = t;
-            }
+            self.human = human_move(&self.room, self.human, self.her, d);
         }
         // 2. she moves along her setpoint, unless latched.
-        let mut bumped = false;
-        let mut attacked = false;
-        if !self.latched
-            && let Some(d) = self.brain_now(log, brain).heading
-        {
-            let t = self.her.step(d);
-            if self.room.free(t) {
-                self.her = t;
-                if self.her == self.human {
-                    attacked = true;
-                    self.attacks += 1;
-                }
-            } else {
-                bumped = true;
-                self.bumps += 1;
-            }
-        }
+        let heading = self.brain_now(log, brain).heading;
+        let (her, bumped) = advance(&self.room, self.her, heading, self.latched);
+        self.her = her;
+        self.bumps += u32::from(bumped);
+        // An attack is ending the frame in the human's cell, whether she
+        // drove into it or sat there. Same definition as `attacking` on
+        // the log side, so the two counts must agree.
+        let attacked = self.her == self.human;
+        self.attacks += u32::from(attacked);
         // 3. the world reports.
         if bumped {
             log.append(events::bump());
         }
-        let dist = self.her.dist(self.human);
-        if dist <= crate::RELIABLE_RANGE || (dist <= crate::FLAKY_RANGE && !f.dropout) {
-            log.append(events::human(self.human));
+        if let Some(seen) = sighting(self.her, self.human, f.dropout) {
+            log.append(events::human(seen));
         }
         // 4. time.
         self.ms += f.dt;
@@ -131,7 +150,7 @@ impl Sim {
     /// Start whatever she desires that has not been started: record it in
     /// the log first, then perform it. The in-flight set comes from the
     /// same checkpoint as her brain, so nothing here refolds the log.
-    pub fn host_acts(&mut self, log: &mut Log<Ev>, brain: &Fold<'_, Ev, Brain>) {
+    pub fn host_acts(&mut self, log: &mut Log<Ev>, brain: &Fold<Ev, Brain>) {
         let (b, in_flight) = self.host_now(log, brain);
         let d = diff_effects(&b.desired_effects(), &in_flight);
         for fx in d.start {

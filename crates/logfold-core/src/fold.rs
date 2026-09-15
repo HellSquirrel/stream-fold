@@ -20,21 +20,21 @@ use std::rc::Rc;
 use crate::event::{Action, Domain, Event, Index};
 use crate::log::LogView;
 
-type Step<'a, E, X> = Rc<dyn Fn(X, Index, &E) -> X + 'a>;
-type Done<'a, X, S> = Rc<dyn Fn(&X) -> S + 'a>;
+type Step<E, X> = Rc<dyn Fn(X, Index, &E) -> X>;
+type Done<X, S> = Rc<dyn Fn(&X) -> S>;
 
 /// A left fold over events `E` with internal state `X` and output `S`.
 ///
 /// `S` defaults to `X`: a plain fold's output is its state.
-pub struct Fold<'a, E, X, S = X> {
+pub struct Fold<E, X, S = X> {
     init: X,
-    step: Step<'a, E, X>,
-    done: Done<'a, X, S>,
+    step: Step<E, X>,
+    done: Done<X, S>,
     /// Absolute index this fold starts at. Zero unless resumed via [`Fold::from`].
     skip: usize,
 }
 
-impl<E, X: Clone, S> Clone for Fold<'_, E, X, S> {
+impl<E, X: Clone, S> Clone for Fold<E, X, S> {
     fn clone(&self) -> Self {
         Fold {
             init: self.init.clone(),
@@ -45,9 +45,9 @@ impl<E, X: Clone, S> Clone for Fold<'_, E, X, S> {
     }
 }
 
-impl<'a, E: 'a, X: Clone + 'a> Fold<'a, E, X> {
+impl<E: 'static, X: Clone + 'static> Fold<E, X> {
     /// A fold whose output is its state.
-    pub fn new(init: X, step: impl Fn(X, Index, &E) -> X + 'a) -> Self {
+    pub fn new(init: X, step: impl Fn(X, Index, &E) -> X + 'static) -> Self {
         Fold {
             init,
             step: Rc::new(step),
@@ -57,7 +57,7 @@ impl<'a, E: 'a, X: Clone + 'a> Fold<'a, E, X> {
     }
 }
 
-impl<'a, E: 'a, X: Clone + 'a, S: 'a> Fold<'a, E, X, S> {
+impl<E, X: Clone, S> Fold<E, X, S> {
     /// One step of the underlying state machine.
     pub fn step(&self, x: X, index: Index, ev: &E) -> X {
         (self.step)(x, index, ev)
@@ -94,6 +94,7 @@ impl<'a, E: 'a, X: Clone + 'a, S: 'a> Fold<'a, E, X, S> {
     }
 
     /// Fold the view (from `skip` onward) and return the final internal state.
+    #[inline(never)]
     pub fn state(&self, log: LogView<'_, E>) -> X {
         self.tail(log)
             .iter()
@@ -125,7 +126,7 @@ impl<'a, E: 'a, X: Clone + 'a, S: 'a> Fold<'a, E, X, S> {
 
     /// The same fold, starting from `state` as if `upto` events were
     /// already folded. This *is* a checkpoint.
-    pub fn from(&self, state: X, upto: usize) -> Fold<'a, E, X, S> {
+    pub fn from(&self, state: X, upto: usize) -> Fold<E, X, S> {
         Fold {
             init: state,
             step: self.step.clone(),
@@ -133,9 +134,13 @@ impl<'a, E: 'a, X: Clone + 'a, S: 'a> Fold<'a, E, X, S> {
             skip: upto,
         }
     }
+}
 
+/// Combinators that build new closures. These need `'static` only because
+/// the closures are boxed; everything that merely runs a fold is above.
+impl<E: 'static, X: Clone + 'static, S: 'static> Fold<E, X, S> {
     /// Derive a projection from this fold's output.
-    pub fn map<T: 'a>(self, f: impl Fn(&S) -> T + 'a) -> Fold<'a, E, X, T> {
+    pub fn map<T: 'static>(self, f: impl Fn(&S) -> T + 'static) -> Fold<E, X, T> {
         let done = self.done;
         Fold {
             init: self.init,
@@ -151,12 +156,14 @@ impl<'a, E: 'a, X: Clone + 'a, S: 'a> Fold<'a, E, X, S> {
     /// different checkpoints is a construction-time programmer error and
     /// panics in every build: the alternative is a pair whose halves
     /// silently describe different prefixes of the log.
-    pub fn zip<Y: Clone + 'a, T: 'a>(
+    pub fn zip<Y: Clone + 'static, T: 'static>(
         self,
-        other: Fold<'a, E, Y, T>,
-    ) -> Fold<'a, E, (X, Y), (S, T)> {
-        assert_eq!(
-            self.skip, other.skip,
+        other: Fold<E, Y, T>,
+    ) -> Fold<E, (X, Y), (S, T)> {
+        // A literal message on purpose: `assert_eq!` would link integer
+        // formatting into every bundle for a case that never happens.
+        assert!(
+            self.skip == other.skip,
             "zip of folds resumed at different indices"
         );
         let (sx, sy) = (self.step, other.step);
@@ -171,7 +178,7 @@ impl<'a, E: 'a, X: Clone + 'a, S: 'a> Fold<'a, E, X, S> {
 
     /// Restrict the fold to the events it declares. Everything else is
     /// stepped over untouched. This is proposal §3.2's scope.
-    pub fn scoped(self, keep: impl Fn(&E) -> bool + 'a) -> Fold<'a, E, X, S> {
+    pub fn scoped(self, keep: impl Fn(&E) -> bool + 'static) -> Fold<E, X, S> {
         let step = self.step;
         Fold {
             init: self.init,
@@ -185,7 +192,7 @@ impl<'a, E: 'a, X: Clone + 'a, S: 'a> Fold<'a, E, X, S> {
 /// The left-fold law: resuming from the state at any split equals folding
 /// the whole. Returns the first violating split.
 pub fn checkpoint_law<E, X: Clone, S: PartialEq + std::fmt::Debug>(
-    f: &Fold<'_, E, X, S>,
+    f: &Fold<E, X, S>,
     log: LogView<'_, E>,
 ) -> Result<(), String> {
     let full = f.run(log);
@@ -234,14 +241,7 @@ impl<X: Clone> Checkpoints<X> {
     /// Save the fold's state after the first `n` events of `log`, folding
     /// only from the nearest saved state at or before `n`. The left-fold
     /// law makes that the same state as folding from zero.
-    pub fn take<'a, E: 'a, S: 'a>(
-        &mut self,
-        fold: &Fold<'a, E, X, S>,
-        log: LogView<'_, E>,
-        n: usize,
-    ) where
-        X: 'a,
-    {
+    pub fn take<E, S>(&mut self, fold: &Fold<E, X, S>, log: LogView<'_, E>, n: usize) {
         let n = n.min(log.end());
         let state = self.resume(fold, n).state(log.prefix(n));
         self.insert(n, state);
@@ -265,10 +265,7 @@ impl<X: Clone> Checkpoints<X> {
     ///
     /// `n` must be at or after `fold.skip()`: a fold cannot be resumed
     /// before the point it already starts at.
-    pub fn resume<'a, E: 'a, S: 'a>(&self, fold: &Fold<'a, E, X, S>, n: usize) -> Fold<'a, E, X, S>
-    where
-        X: 'a,
-    {
+    pub fn resume<E, S>(&self, fold: &Fold<E, X, S>, n: usize) -> Fold<E, X, S> {
         debug_assert!(
             n >= fold.skip(),
             "resume at {n} before the fold's start {}",
@@ -283,15 +280,7 @@ impl<X: Clone> Checkpoints<X> {
     /// Output after the first `n` events of `log`, resuming from the
     /// nearest saved state. `n` is clamped to the log length and must be
     /// at or after `fold.skip()`.
-    pub fn output_at<'a, E: 'a, S: 'a>(
-        &self,
-        fold: &Fold<'a, E, X, S>,
-        log: LogView<'_, E>,
-        n: usize,
-    ) -> S
-    where
-        X: 'a,
-    {
+    pub fn output_at<E, S>(&self, fold: &Fold<E, X, S>, log: LogView<'_, E>, n: usize) -> S {
         let n = n.min(log.end());
         self.resume(fold, n).run(log.prefix(n))
     }
@@ -304,7 +293,7 @@ impl<X: Clone> Checkpoints<X> {
 }
 
 /// Virtual time: the most recent `Tick`, 0 before any.
-pub fn now<D: Domain>() -> Fold<'static, Event<D>, u64> {
+pub fn now<D: Domain>() -> Fold<Event<D>, u64> {
     Fold::new(0, |t, _, ev| match ev {
         Event::Tick { ms } => *ms,
         _ => t,
@@ -321,7 +310,7 @@ pub fn now<D: Domain>() -> Fold<'static, Event<D>, u64> {
 /// what a checkpoint of this fold carries. Because this is a fold, the
 /// host's "outbox" survives a restart for free: fold the log, perform
 /// whatever is still here and expects a result.
-pub fn in_flight<D: Domain>() -> Fold<'static, Event<D>, BTreeSet<D::Effect>> {
+pub fn in_flight<D: Domain>() -> Fold<Event<D>, BTreeSet<D::Effect>> {
     Fold::new(
         BTreeSet::new(),
         |mut s: BTreeSet<D::Effect>, _, ev: &Event<D>| {
@@ -345,9 +334,8 @@ mod tests {
     use crate::event::{IoResult, Never, ReqId};
     use crate::log::Log;
 
-    #[derive(Clone, Debug, PartialEq, Eq, Hash)]
     struct T;
-    #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+    #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
     enum Fx {
         Post(ReqId),
         Ping(Index),
@@ -368,7 +356,7 @@ mod tests {
     type Ev = Event<T>;
 
     /// Count of ticks and the last tick value.
-    fn ticks() -> Fold<'static, Ev, (u32, u64)> {
+    fn ticks() -> Fold<Ev, (u32, u64)> {
         Fold::new((0, 0), |(n, last), _, ev| match ev {
             Event::Tick { ms } => (n + 1, *ms),
             _ => (n, last),

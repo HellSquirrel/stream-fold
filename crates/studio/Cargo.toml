@@ -1,0 +1,10 @@
+[package]
+name = "studio"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+description = "Brunhilda's studio: her brain, her world and the control panel as one component on one log."
+
+[dependencies]
+logfold-core = { path = "../logfold-core" }
+brunhilda = { path = "../brunhilda" }

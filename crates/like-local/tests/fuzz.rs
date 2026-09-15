@@ -6,14 +6,14 @@ use logfold_core::{Event, Expectation, Fold, Log, check_all_prefixes, checkpoint
 use proptest::prelude::*;
 
 /// Independent click counter, so the property is not checked against itself.
-fn clicks() -> Fold<'static, Ev, u32> {
+fn clicks() -> Fold<Ev, u32> {
     Fold::new(0, |n, _, ev| match ev {
         Event::Input { .. } => n + 1,
         _ => n,
     })
 }
 
-fn liked_iff_odd_clicks() -> Expectation<'static, Ev> {
+fn liked_iff_odd_clicks() -> Expectation<Ev> {
     Expectation::on("liked_iff_odd_clicks", like().zip(clicks()), |(v, n)| {
         if v.liked == (n % 2 == 1) {
             Ok(())

@@ -50,6 +50,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 
 [[package]]
+name = "counter"
+version = "0.0.1"
+dependencies = [
+ "logfold-core",
+]
+
+[[package]]
+name = "counter-app"
+version = "0.0.1"
+dependencies = [
+ "counter",
+ "logfold-web",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "errno"
 version = "0.3.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -101,6 +117,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
 
 [[package]]
+name = "like-app"
+version = "0.0.1"
+dependencies = [
+ "like-local",
+ "logfold-web",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "like-button"
 version = "0.0.1"
 dependencies = [
@@ -117,10 +142,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "like-raw"
+version = "0.0.1"
+dependencies = [
+ "like-local",
+ "logfold-web",
+]
+
+[[package]]
 name = "linux-raw-sys"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
+
+[[package]]
+name = "lock_api"
+version = "0.4.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "224399e74b87b5f3557511d98dff8b14089b3dadafcab6bb93eab67d3aace965"
+dependencies = [
+ "scopeguard",
+]
 
 [[package]]
 name = "logfold-core"
@@ -130,9 +172,11 @@ version = "0.0.1"
 name = "logfold-web"
 version = "0.0.1"
 dependencies = [
- "brunhilda",
+ "counter",
  "like-local",
  "logfold-core",
+ "studio",
+ "talc",
  "wasm-bindgen",
 ]
 
@@ -291,6 +335,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "scopeguard"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
+
+[[package]]
+name = "studio"
+version = "0.0.1"
+dependencies = [
+ "brunhilda",
+ "logfold-core",
+]
+
+[[package]]
+name = "studio-app"
+version = "0.0.1"
+dependencies = [
+ "logfold-web",
+ "studio",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "syn"
 version = "2.0.119"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -310,6 +377,15 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-ident",
+]
+
+[[package]]
+name = "talc"
+version = "4.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a3ae828aa394de34c7de08f522d1b86bd1c182c668d27da69caadda00590f26d"
+dependencies = [
+ "lock_api",
 ]
 
 [[package]]

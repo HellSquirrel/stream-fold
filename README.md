@@ -7,9 +7,13 @@ time is an event. Design document: [`docs/logfold-proposal.md`](docs/logfold-pro
 
 - `crates/logfold-core` — log, event model, effects (as a diffed projection), expectations.
 - `crates/like-local` — the whole idea in one file: a like button, click flips a flag. Start here.
+- `crates/counter` — the second component, to show what adding one costs: a domain, a step, a projection, a component value.
 - `crates/like-button` — M0 example with a request, an honest host, a server model and an adversarial fuzz harness.
-- `crates/logfold-web` — browser hosts for the like button and Brunhilda: the log lives in WASM, the DOM is an output, a slider scrubs history through checkpoints.
+- `crates/logfold-web` — the generic browser host: `Host` and the `export_component!` macro. A library; it exports nothing itself.
+- `crates/apps/*` — one tiny cdylib per app (`like-app`, `counter-app`, `studio-app`), each a single `export_component!` line, each built into its own wasm bundle so a page loads only its app. `like-raw` is the same button through the raw boundary: `export_raw!`, no wasm-bindgen, plain exports, loaded by `www/logfold-raw.mjs`.
+- `www/` — the site: pages, `logfold.mjs` (the shim every page mounts), `timeline.mjs` (the devtools), and `pkg/<app>/` for the built bundles. See [`docs/boundary.md`](docs/boundary.md).
 - `crates/brunhilda` — a robot vacuum cleaner as a fold, a simulated room as a second host, and a fuzzer that plays the human she keeps attacking.
+- `crates/studio` — the real app: her brain, her world and the control panel as one component on one log, rendered by 96 projected cells and CSS transitions.
 
 ## Run
 
@@ -21,11 +25,15 @@ cargo test --workspace
 
 ```sh
 cargo install wasm-pack            # once
-wasm-pack build crates/logfold-web --target web --out-dir pkg
-cd crates/logfold-web && python3 -m http.server 8765
-# open http://127.0.0.1:8765/www/index.html      (the like button)
-# open http://127.0.0.1:8765/www/brunhilda.html  (you vs. Brunhilda; arrow keys move you)
+./scripts/build-www.sh             # every app bundle into www/pkg/<app>/
+cd www && python3 -m http.server 8765
+# open http://127.0.0.1:8765/index.html      (the like button)
+# open http://127.0.0.1:8765/like-raw.html   (the same button, raw boundary, no wasm-bindgen)
+# open http://127.0.0.1:8765/counter.html    (the counter)
+# open http://127.0.0.1:8765/studio.html     (Brunhilda's studio: the real app)
 ```
+
+Bundle sizes after wasm-opt, brotli in brackets: like 43 KB (15) plus 8 KB (2) of generated glue, like-raw 39 KB (14) with no glue file, counter 43 KB (15), studio 94 KB (30). The previous single bundle carrying everything was 168 KB (48). What is in them and why is in `docs/boundary.md`.
 
 The shim in `www/index.html` appends an event per click, writes the view
 into the DOM, and asks for the view at any index when the slider moves.
@@ -51,11 +59,21 @@ Since M0:
 
 - [x] Browser host: `like-local` in WASM with a scrubbable history (`crates/logfold-web`)
 - [x] Events are domain-parametric (`Domain` trait: `Input`, `Sense`, `Effect`); `Sense` is unsolicited world input; effects live in each domain
-- [x] Second host: Brunhilda. Time drives her, a heading is an *output* the sim reads every frame, an e-stop is a fire-and-forget *action* the host latches. Three fold-based expectations (never in the human's cell, frozen after e-stop, coverage monotone) plus dead-reckoning and attack-count agreement with the sim at frame boundaries.
+- [x] Second host: Brunhilda. Time drives her, a heading is an *output* the sim reads every frame, an e-stop is a fire-and-forget *effect* the host latches. Three fold-based expectations on every prefix (never in the human's cell, frozen after e-stop, coverage monotone), the checkpoint law, and three host checks at every frame boundary (her dead-reckoned position equals the sim's, nothing left to start, attacks in the log equal attacks the sim counted).
 - [x] **Exit criterion met, twice.** The fuzzer breaks the naive policy (drives adjacent to you, you step into her path). It also broke the *careful* policy twice before it held: `Dock` after an e-stop resumed her brain while the host latch still held, and `Start` moved her before she had sensed anything, running over anyone standing by the dock.
 
 - [x] Brunhilda plans: nearest uncleaned cell by breadth-first search over the map she knows, docks when the job is done, waits when the only cells left are the ring around you. The sim checkpoints her brain and the in-flight set together, so each frame costs the events since the last one.
+- [x] Bundle floor, measured: toolchain knobs are spent (all wasm-opt passes together half a kilobyte, now on for every bundle; lower opt-levels compress worse), the remaining honest target is about 33 KB raw by going `no_std` and swapping the allocator, and the rest is the design and the B-trees. Details in `docs/boundary.md`.
+- [x] The raw boundary: `export_raw!` puts the same host behind plain `extern "C"` exports, numbers only, names as bytes decoded once, patches read in place as a `Float64Array` view. The host library's wasm-bindgen surface became a feature (`bindgen`, default on); a raw app turns it off and links no wasm-bindgen at all. Same page, same shim, 13.6 KB over the wire instead of 17.1. Measured: wasm-bindgen's share of the wasm was 4 KB; the generated JS was the other 2 KB brotli.
+- [x] Bundle diet, measured with twiggy: the allocator is `talc` (4 KB instead of dlmalloc's 8), no integer formatting or `format!` on library paths, and the devtools methods are a separate `export_devtools!` so a page without a timeline drops them (0.8 KB). The `core::fmt` that remains is std's panic hook, a floor on stable Rust. B-trees stay because we like them.
+- [x] Every app is its own bundle: `crates/apps/<name>-app` is one `export_component!` line over the `logfold-web` host library, built by `scripts/build-www.sh` into `www/pkg/<app>/`. The like page loads 16 KB brotli instead of 48.
+- [x] **The studio.** Two applications of the framework in one app on one log: the panel (run, policy, dropouts, rate), Brunhilda's brain unchanged, and the world the sim used to keep in memory (you, the latch, the counts), all one fold, because your arrow keys are inputs too. A component can now declare its effects and a simulated world; the host gained `frame(dt)` and records `Started` after every append. The page is 96 cells and three dots positioned by variables; CSS transitions do the gliding; the slider replays the whole session, you included. No canvas.
+- [x] Slots come in two kinds: a CSS custom property or an attribute on the target, one number either way. Attributes are selectable in every browser and visible in the markup; typed `attr()` bridges them into inherited variables (Chrome 133+). The like button now uses `html[data-liked="1"]` selectors; the counter bridges `data-count` and lights its bar with `sibling-index()`.
+- [x] Adding a component is four things: a domain, a step, a projection, a `Component` value (`crates/counter` is the worked example, 60 lines); one `export_component!` line in `logfold-web`; a skeleton page that imports `logfold.mjs` and calls `mount`. The counter renders its number as text with a CSS counter and lights a bar with arithmetic on the same variable.
+- [x] The boundary, designed and built for the like button: fold state projects to numbers on named targets (`logfold_core::project`); the host writes CSS custom properties and the stylesheet renders. The DOM is `project(fold(log[..at]))`; scrubbing and rendering are one map diff. The page has no like-specific JavaScript. See `docs/boundary.md`.
 - [x] Review pass: three bugs fixed (an unincremented bump counter, a debug-only skip check in `Fold::zip`, an edge-triggered desired set), `Started` lost its redundant request id, checkpoints resume from the store everywhere. The design doc's section 11 records every decision since v0.1.
-- [x] Brunhilda in the browser (`www/brunhilda.html`): you are the human, arrow keys move you, the lower canvas replays what she knew at any index. Switch the policy to *naive* and step in front of her.
+- [x] Brunhilda in the browser, first as a hand-written canvas host with a second canvas replaying what she knew. Superseded by the studio and removed.
 
 Next: the networked like button in the browser against a fake server; the timeout ambiguity (`Failed` then `Done`) and a resync effect.
+
+Deferred with reasons: [`docs/maybe_todo_someday.md`](docs/maybe_todo_someday.md).

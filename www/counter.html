@@ -1,0 +1,50 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>LogFold: counter</title>
+<style>
+  /* One number arrives as an attribute on the root, <html data-count="3">.
+     Typed attr() bridges it into a custom property that inherits everywhere;
+     the attribute itself serves selectors. Text, a bar and a disabled look all
+     follow from that one number. */
+  @property --count { syntax: "<integer>"; inherits: true; initial-value: 0; }
+  html { --count: attr(data-count type(<integer>), 0); }
+
+  body { font: 16px/1.5 system-ui, sans-serif; max-width: 40rem; margin: 3rem auto; padding: 0 1rem; color: #222; }
+  button { font: inherit; padding: .5rem 1rem; }
+  nav a { margin-right: 1rem; }
+
+  /* the number as text: a CSS counter set from the variable */
+  [data-fold=count] { display: inline-block; min-width: 3ch; text-align: center; font-size: 2rem; font-variant-numeric: tabular-nums; }
+  [data-fold=count]::before { counter-reset: n var(--count); content: counter(n); }
+
+  /* a bar of ten cells lit by arithmetic, no queries and no per-cell markup:
+     cell i is lit when count >= i, and i is the cell's own sibling-index() */
+  .bar { display: flex; gap: 4px; margin: 1rem 0; }
+  .bar i { width: 2rem; height: 1rem; border-radius: 3px; background: #4a90e2; transition: opacity .2s;
+           opacity: calc(0.15 + 0.85 * clamp(0, var(--count) - sibling-index() + 1, 1)); }
+
+  /* reset looks idle at zero: the attribute is selectable directly */
+  html[data-count="0"] [data-on="click:reset"] { opacity: .4; }
+</style>
+
+<nav><a href="index.html">like</a><a href="like-raw.html">like (raw)</a><a href="counter.html">counter</a><a href="studio.html">studio</a></nav>
+<h1>Counter</h1>
+<p>
+  <button data-on="click:dec">−</button>
+  <span data-fold="count"></span>
+  <button data-on="click:inc">+</button>
+  <button data-on="click:reset">reset</button>
+</p>
+<div class="bar"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+
+<h2>History</h2>
+<div id="history"></div>
+
+<script type="module">
+  import init, { CounterApp } from "./pkg/counter-app/counter_app.js";
+  import { mount } from "./logfold.mjs";
+  import { timeline } from "./timeline.mjs";
+  await init();
+  const host = mount(new CounterApp());
+  timeline(host, document.getElementById("history"));
+</script>

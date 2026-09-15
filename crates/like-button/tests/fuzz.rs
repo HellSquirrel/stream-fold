@@ -41,7 +41,7 @@ struct Server {
     answered: BTreeSet<ReqId>,
 }
 
-fn server() -> Fold<'static, Ev, Server> {
+fn server() -> Fold<Ev, Server> {
     Fold::new(Server::default(), |mut s: Server, _, ev: &Ev| {
         match ev {
             Event::Started {
@@ -70,7 +70,7 @@ fn server() -> Fold<'static, Ev, Server> {
 /// Desired effects are level-triggered: while a request is pending it is
 /// desired exactly as started; when idle and dirty, one fresh `Post` for
 /// the wanted value; otherwise nothing.
-fn effects_match_pending() -> Expectation<'static, Ev> {
+fn effects_match_pending() -> Expectation<Ev> {
     Expectation::on("effects_match_pending", like_button(), |v| {
         let fx = desired_effects(v);
         let ok = match (&v.pending, v.dirty()) {
@@ -91,7 +91,7 @@ fn effects_match_pending() -> Expectation<'static, Ev> {
 
 /// Everything the host has in flight is still desired. With the diff
 /// model this is what "nothing to cancel" means at every prefix.
-fn in_flight_is_desired() -> Expectation<'static, Ev> {
+fn in_flight_is_desired() -> Expectation<Ev> {
     Expectation::on(
         "in_flight_is_desired",
         like_button().zip(in_flight::<LikeButton>()),
@@ -106,7 +106,7 @@ fn in_flight_is_desired() -> Expectation<'static, Ev> {
 }
 
 /// The fold's idea of "in flight" agrees with the core's `in_flight` fold.
-fn pending_matches_in_flight() -> Expectation<'static, Ev> {
+fn pending_matches_in_flight() -> Expectation<Ev> {
     Expectation::on(
         "pending_matches_in_flight",
         like_button().zip(in_flight::<LikeButton>()),
@@ -123,7 +123,7 @@ fn pending_matches_in_flight() -> Expectation<'static, Ev> {
 
 /// The host never starts an effect the fold did not want at that moment.
 /// A fold that carries the view *before* each event and a sticky verdict.
-fn started_only_when_desired() -> Expectation<'static, Ev> {
+fn started_only_when_desired() -> Expectation<Ev> {
     let judge = Fold::new(
         (View::default(), Ok::<(), String>(())),
         |(v, verdict), i, ev| {
@@ -143,7 +143,7 @@ fn started_only_when_desired() -> Expectation<'static, Ev> {
 
 /// Whenever the system is settled (nothing in flight, nothing the fold
 /// still wants started), client and server agree on `liked`.
-fn client_server_agree() -> Expectation<'static, Ev> {
+fn client_server_agree() -> Expectation<Ev> {
     let all = like_button()
         .zip(server())
         .zip(in_flight())
@@ -165,7 +165,7 @@ fn client_server_agree() -> Expectation<'static, Ev> {
     })
 }
 
-fn expectations() -> Vec<Expectation<'static, Ev>> {
+fn expectations() -> Vec<Expectation<Ev>> {
     vec![
         effects_match_pending(),
         in_flight_is_desired(),

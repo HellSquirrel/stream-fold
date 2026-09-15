@@ -6,14 +6,18 @@
 //! say is declared by a [`Domain`] implementation. See
 //! `docs/logfold-proposal.md`.
 
+pub mod component;
 pub mod effect;
 pub mod event;
 pub mod expect;
 pub mod fold;
 pub mod log;
+pub mod project;
 
+pub use component::Component;
 pub use effect::{EffectDiff, IdemKey, diff_effects};
 pub use event::{Action, Domain, Event, Index, IoResult, Key, Never, Origin, ReqId};
 pub use expect::{Breach, Expectation, Mode, check_all_prefixes, guard};
 pub use fold::{Checkpoints, Fold, checkpoint_law, in_flight, now};
 pub use log::{Log, LogView};
+pub use project::{Change, Name, Projection, Slot, SlotKind, apply, diff};

@@ -3,16 +3,22 @@ name = "logfold-web"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
-description = "Browser hosts for the like button and Brunhilda: the log lives in WASM, the DOM is an output."
+description = "The generic browser host: a Component behind the boundary API, plus the macro that exports one as a wasm class."
 
-[lib]
-crate-type = ["cdylib", "rlib"]
+[features]
+default = ["bindgen"]
+# The wasm-bindgen surface (`export_component!`). Off for raw apps: any crate
+# that links wasm-bindgen gets its runtime exports whether it uses them or not.
+bindgen = ["dep:wasm-bindgen"]
 
 [dependencies]
 logfold-core = { path = "../logfold-core" }
-like-local = { path = "../like-local" }
-brunhilda = { path = "../brunhilda" }
-wasm-bindgen = "0.2"
+wasm-bindgen = { version = "0.2", optional = true }
 
-[package.metadata.wasm-pack.profile.release]
-wasm-opt = ["-Oz", "--enable-bulk-memory", "--enable-nontrapping-float-to-int"]
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+talc = { version = "4", default-features = false, features = ["lock_api"] }
+
+[dev-dependencies]
+like-local = { path = "../like-local" }
+counter = { path = "../counter" }
+studio = { path = "../studio" }

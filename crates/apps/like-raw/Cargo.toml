@@ -1,0 +1,13 @@
+[package]
+name = "like-raw"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+description = "The like button through the raw boundary: no wasm-bindgen, plain exports, numbers only."
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+logfold-web = { path = "../../logfold-web", default-features = false }
+like-local = { path = "../../like-local" }

@@ -163,7 +163,6 @@ mod tests {
     use super::*;
     use crate::event::{IoResult, Never};
 
-    #[derive(Clone, Debug, PartialEq, Eq, Hash)]
     struct T;
     impl Domain for T {
         type Input = ();

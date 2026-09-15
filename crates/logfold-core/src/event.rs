@@ -23,8 +23,7 @@
 //! rather than host memory (see [`crate::fold::in_flight`]); it is written
 //! *before* the effect is performed.
 
-use std::fmt::Debug;
-use std::hash::Hash;
+use std::fmt::{self, Debug};
 
 /// Scope key, e.g. `"post:42"`, `"brunhilda"`, `"conn:feed"`.
 ///
@@ -40,13 +39,13 @@ pub type Index = u64;
 pub type ReqId = u64;
 
 /// What a domain can say. Implemented by a marker type per application.
-pub trait Domain: Clone + Debug + PartialEq + Eq + Hash + 'static {
+pub trait Domain: 'static {
     /// User intent or commands. Pure: never depends on the world.
-    type Input: Clone + Debug + PartialEq + Eq + Hash;
+    type Input: Clone + Debug + PartialEq + Eq;
     /// Unsolicited world input.
-    type Sense: Clone + Debug + PartialEq + Eq + Hash;
-    /// Actions the host performs on the domain's behalf.
-    type Effect: Clone + Debug + PartialEq + Eq + Hash + Ord + Action;
+    type Sense: Clone + Debug + PartialEq + Eq;
+    /// Effects the host performs on the domain's behalf.
+    type Effect: Clone + Debug + PartialEq + Eq + Ord + Action;
 }
 
 /// An effect's relationship to the world.
@@ -62,8 +61,7 @@ pub trait Action {
 }
 
 /// The empty type, for domains with no senses or no effects.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum Never {}
+pub type Never = core::convert::Infallible;
 
 impl Action for Never {
     fn req(&self) -> Option<ReqId> {
@@ -71,7 +69,6 @@ impl Action for Never {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Event<D: Domain> {
     /// Virtual time. The core never reads a wall clock.
     Tick { ms: u64 },
@@ -86,7 +83,7 @@ pub enum Event<D: Domain> {
     Started { key: Key, effect: D::Effect },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum IoResult {
     Done,
     Failed,
@@ -94,11 +91,100 @@ pub enum IoResult {
 }
 
 /// Where an event came from. Decides its fate under each replay mode.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Origin {
     Input,
     World,
     Host,
+}
+
+// Written by hand rather than derived: a derive would demand that the
+// `Domain` marker itself be `Clone`, `Debug` and so on, when only the
+// payload types are.
+impl<D: Domain> Clone for Event<D> {
+    fn clone(&self) -> Self {
+        match self {
+            Event::Tick { ms } => Event::Tick { ms: *ms },
+            Event::Input { key, input } => Event::Input {
+                key: key.clone(),
+                input: input.clone(),
+            },
+            Event::Sense { key, sense } => Event::Sense {
+                key: key.clone(),
+                sense: sense.clone(),
+            },
+            Event::Io { key, req, res } => Event::Io {
+                key: key.clone(),
+                req: *req,
+                res: res.clone(),
+            },
+            Event::Started { key, effect } => Event::Started {
+                key: key.clone(),
+                effect: effect.clone(),
+            },
+        }
+    }
+}
+
+impl<D: Domain> PartialEq for Event<D> {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Event::Tick { ms: a }, Event::Tick { ms: b }) => a == b,
+            (Event::Input { key: k, input: a }, Event::Input { key: l, input: b }) => {
+                k == l && a == b
+            }
+            (Event::Sense { key: k, sense: a }, Event::Sense { key: l, sense: b }) => {
+                k == l && a == b
+            }
+            (
+                Event::Io {
+                    key: k,
+                    req: r,
+                    res: a,
+                },
+                Event::Io {
+                    key: l,
+                    req: q,
+                    res: b,
+                },
+            ) => k == l && r == q && a == b,
+            (Event::Started { key: k, effect: a }, Event::Started { key: l, effect: b }) => {
+                k == l && a == b
+            }
+            _ => false,
+        }
+    }
+}
+
+impl<D: Domain> Eq for Event<D> {}
+
+impl<D: Domain> Debug for Event<D> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Event::Tick { ms } => f.debug_struct("Tick").field("ms", ms).finish(),
+            Event::Input { key, input } => f
+                .debug_struct("Input")
+                .field("key", key)
+                .field("input", input)
+                .finish(),
+            Event::Sense { key, sense } => f
+                .debug_struct("Sense")
+                .field("key", key)
+                .field("sense", sense)
+                .finish(),
+            Event::Io { key, req, res } => f
+                .debug_struct("Io")
+                .field("key", key)
+                .field("req", req)
+                .field("res", res)
+                .finish(),
+            Event::Started { key, effect } => f
+                .debug_struct("Started")
+                .field("key", key)
+                .field("effect", effect)
+                .finish(),
+        }
+    }
 }
 
 impl<D: Domain> Event<D> {

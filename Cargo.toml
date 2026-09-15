@@ -1,6 +1,15 @@
 [workspace]
 resolver = "3"
-members = ["crates/logfold-core", "crates/like-local", "crates/like-button", "crates/logfold-web", "crates/brunhilda"]
+members = [
+    "crates/logfold-core",
+    "crates/like-local",
+    "crates/counter",
+    "crates/like-button",
+    "crates/brunhilda",
+    "crates/studio",
+    "crates/logfold-web",
+    "crates/apps/*",
+]
 
 [workspace.package]
 edition = "2024"

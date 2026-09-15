@@ -1,0 +1,35 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>LogFold: like</title>
+<style>
+  /* ---- the skeleton's own rules: every appearance decision lives here ----
+     The state arrives as an attribute on the root, <html data-liked="1">, so a
+     plain attribute selector does the work: no @property, no container query,
+     every browser. */
+
+  body { font: 16px/1.5 system-ui, sans-serif; max-width: 40rem; margin: 3rem auto; padding: 0 1rem; color: #222; }
+  button { font: inherit; padding: .5rem 1rem; }
+  nav a { margin-right: 1rem; }
+
+  [data-fold=like] { font-size: 2rem; padding: .5rem 1.5rem; transition: scale .15s, color .15s, border-color .15s; }
+  [data-fold=like]::before { content: "♡ "; }
+  html[data-liked="1"] [data-fold=like] { scale: 1.1; color: #d32f2f; border-color: #d32f2f; }
+  html[data-liked="1"] [data-fold=like]::before { content: "♥ "; }
+</style>
+
+<nav><a href="index.html">like</a><a href="like-raw.html">like (raw)</a><a href="counter.html">counter</a><a href="studio.html">studio</a></nav>
+<h1>Like</h1>
+<p><button data-fold="like" data-on="click:toggle">like</button> <button id="tick">tick</button></p>
+
+<h2>History</h2>
+<div id="history"></div>
+
+<script type="module">
+  import init, { LikeApp } from "./pkg/like-app/like_app.js";
+  import { mount } from "./logfold.mjs";
+  import { timeline } from "./timeline.mjs";
+  await init();
+  const host = mount(new LikeApp());
+  timeline(host, document.getElementById("history"));
+  document.getElementById("tick").onclick = () => host.tick();
+</script>

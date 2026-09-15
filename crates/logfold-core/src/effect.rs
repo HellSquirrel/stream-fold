@@ -13,7 +13,7 @@
 //! - An effect declares whether it expects a result ([`Action`]). One that
 //!   does not (an analytics ping, an e-stop) is resolved the moment it is
 //!   started, and its `Started` event is the permanent record that it
-//!   happened. That is what makes edge-triggered, fire-and-forget actions
+//!   happened. That is what makes edge-triggered, fire-and-forget effects
 //!   expressible in a level-triggered desired-set model.
 //!
 //! Not modelled here: *outputs* such as the rendered DOM or a motor
@@ -26,7 +26,7 @@ use crate::event::{Action, Index, Key};
 
 /// Idempotency key: `(scope, log index of the causing event)`.
 /// Stable across replays, unique per cause.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct IdemKey {
     pub scope: Key,
     pub index: Index,
@@ -80,7 +80,7 @@ mod tests {
     use super::*;
     use crate::event::ReqId;
 
-    #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
     enum Fx {
         Post(ReqId),
         Ping(Index),

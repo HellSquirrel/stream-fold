@@ -29,7 +29,6 @@ use std::collections::BTreeSet;
 use logfold_core::{Action, Domain, Event, Fold, IdemKey, Index, IoResult, Key, Never, ReqId};
 
 /// The domain: a click in, a `Post` out, nothing unsolicited from the world.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct LikeButton;
 
 impl Domain for LikeButton {
@@ -38,10 +37,10 @@ impl Domain for LikeButton {
     type Effect = Effect;
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Click;
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Effect {
     /// Ask the server to store `intent`. Answered by an `Io`.
     Post {
@@ -151,7 +150,7 @@ pub fn step(mut v: View, index: Index, ev: &Ev) -> View {
 }
 
 /// The like button as a fold, scoped to its post.
-pub fn like_button() -> Fold<'static, Ev, View> {
+pub fn like_button() -> Fold<Ev, View> {
     Fold::new(View::default(), step).scoped(in_scope)
 }
 
@@ -174,7 +173,7 @@ pub fn desired_effects(v: &View) -> BTreeSet<Effect> {
 }
 
 /// Derived projection: desired effects as a fold.
-pub fn desired() -> Fold<'static, Ev, View, BTreeSet<Effect>> {
+pub fn desired() -> Fold<Ev, View, BTreeSet<Effect>> {
     like_button().map(desired_effects)
 }
 

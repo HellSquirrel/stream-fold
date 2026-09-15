@@ -22,10 +22,10 @@
 //! and flaky out to distance 4: the sim may drop those. Beyond 4 she is
 //! blind. The sim reports positions *after* the frame's moves.
 //!
-//! # Outputs and actions
+//! # Outputs and effects
 //!
 //! Her heading is an output: an idempotent function of her state that the
-//! sim reads every frame and never logs. An e-stop is an action: a
+//! sim reads every frame and never logs. An e-stop is an effect: a
 //! fire-and-forget effect the host records with `Started` and honours as
 //! a latch. That split is the outputs-versus-effects rule documented in
 //! [`logfold_core::effect`].
@@ -50,7 +50,6 @@ pub const RETRY_TICKS: u64 = 40;
 
 // ---------- domain ----------
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Vacuum;
 
 impl Domain for Vacuum {
@@ -59,14 +58,14 @@ impl Domain for Vacuum {
     type Effect = Effect;
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Cmd {
     Start,
     Dock,
     EStop,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Sense {
     /// She tried to move and hit a wall or furniture.
     Bump,
@@ -74,7 +73,7 @@ pub enum Sense {
     Human(Cell),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Effect {
     /// Kill the motors. Fire-and-forget; the host latches until `Start`.
     EStop { idem: IdemKey },
@@ -503,7 +502,7 @@ pub fn step(room: &Room, policy: Policy, mut b: Brain, index: Index, ev: &Ev) ->
 }
 
 /// Her brain as a fold, scoped to her key, starting at the dock.
-pub fn brain(room: Room, policy: Policy) -> Fold<'static, Ev, Brain> {
+pub fn brain(room: Room, policy: Policy) -> Fold<Ev, Brain> {
     let start = room.dock;
     Fold::new(Brain::at(start), move |b, i, ev| {
         step(&room, policy, b, i, ev)

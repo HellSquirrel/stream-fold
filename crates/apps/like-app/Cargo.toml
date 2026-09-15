@@ -1,0 +1,20 @@
+[package]
+name = "like-app"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+description = "The like button as its own wasm bundle."
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+logfold-web = { path = "../../logfold-web" }
+like-local = { path = "../../like-local" }
+wasm-bindgen = "0.2"
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = ["-Oz", "--converge", "--strip-producers", "--strip-target-features", "--low-memory-unused", "--zero-filled-memory", "--enable-bulk-memory", "--enable-nontrapping-float-to-int"]
+
+[package.metadata.wasm-pack.profile.profiling]
+wasm-opt = false

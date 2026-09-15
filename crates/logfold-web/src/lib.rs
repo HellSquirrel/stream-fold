@@ -1,4 +1,5 @@
-//! Browser host for `like-local`.
+//! Browser hosts: the like button (`LikeApp`, this file) and Brunhilda
+//! (`VacuumApp`, in `vacuum`).
 //!
 //! The core owns the log and the folds. The JavaScript shim does three
 //! things and nothing else: append an event when the user acts, read the
@@ -9,9 +10,10 @@
 //! view that the shim diffs against what is on screen. Nothing about
 //! rendering is logged.
 //!
-//! Text stays in the host (proposal §3.7). No `String` exists in this
-//! crate. Labels are JS strings created once at init and handed back as
-//! externref handles; numbers cross as numbers and JS formats them.
+//! Text stays in the host (proposal §3.7). No string crosses the boundary:
+//! labels are JS strings created once at init and handed back as externref
+//! handles, and numbers cross as numbers for JS to format. The only strings
+//! in linear memory are event keys, which never leave WASM.
 //!
 //! Checkpoint policy lives here, in the host: one saved state every
 //! `CHECKPOINT_EVERY` events. The core never decides when.

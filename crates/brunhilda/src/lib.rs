@@ -27,7 +27,8 @@
 //! Her heading is an output: an idempotent function of her state that the
 //! sim reads every frame and never logs. An e-stop is an action: a
 //! fire-and-forget effect the host records with `Started` and honours as
-//! a latch. That split is why both exist in the proposal.
+//! a latch. That split is the outputs-versus-effects rule documented in
+//! [`logfold_core::effect`].
 
 pub mod sim;
 

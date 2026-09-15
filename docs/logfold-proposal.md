@@ -1,6 +1,6 @@
 # LogFold — an event-log runtime for UI and beyond
 
-*Working proposal, v0.1 — 14 Sep 2026*
+*Working proposal, v0.1 — 14 Sep 2026. The code has diverged since; section 11 records each decision and points at the code that is now authoritative. Section numbers are stable: the crates cite them.*
 
 ## 1. One-paragraph pitch
 
@@ -54,6 +54,8 @@ Elm and Redux got the "pure update" half. They kept a single mutable-in-spirit m
 
 ### 4.1 Event model
 
+> Superseded in v0.2, see section 11 (a) and (b): events are parametric over a `Domain`, `Sense` was added, and `Started` is a logged host event.
+
 ```rust
 type Key = SmolStr;            // "post:42", "conn:feed", "robot:7", "io"
 type ReqId = u64;
@@ -73,6 +75,8 @@ enum Event {
 Every event carries a monotonic index and a hybrid logical clock (HLC) so multi-node logs merge causally.
 
 ### 4.2 Effects
+
+> Superseded in v0.2, see section 11 (c), (e) and (f): effects are a desired-set projection the host diffs, `Render` is an output rather than an effect, and `Delay` carries only a request id.
 
 ```rust
 enum Effect {
@@ -105,6 +109,8 @@ fn liked(id: PostId, log: &View<Log>) -> bool { ... }
 - Independent scopes may recompute in parallel (wasm threads / rayon) since they share only immutable log slices.
 
 ### 4.4 Effect emission and feedback
+
+> Superseded in v0.2, see section 11 (c): nothing is emitted; the host diffs the desired set against `in_flight`.
 
 A frame: `append(events) → invalidate → recompute dirty projections → collect effects → hand to shim`. Effects may produce new events (coordinator pattern). Guard: per-frame event budget + cycle detection on projection→event→projection edges; exceeding either raises a dev-mode error.
 
@@ -148,6 +154,7 @@ Three execution modes:
 ### 4.9 Log lifecycle
 
 - Shards per key; per-shard checkpoint after N events (checkpoint = fold output at index i, hashed).
+  > Superseded in v0.2, see section 11 (d): a checkpoint is `fold.from(state, upto)`; the cadence is the host's policy.
 - Flight-recorder window: on any `Failed`/`Fault`/expectation breach, retain full-rate events ±window around it.
 - Export = `{ build_hash, schema_version, checkpoints, tail }`.
 - **Versioning:** each build embeds a schema version; events are upcast via versioned decoders. Replays of an older log run against the archived build by `build_hash`; cross-version replay is best-effort and flagged.
@@ -181,6 +188,8 @@ Single panel, all derived from the log:
 - Like button end-to-end in a browser: click → optimistic → `Post` → `Done/Failed`.
 - Two expectations fuzzed with proptest.
 **Exit:** double-click dedupe bug found by fuzzer, not by hand.
+
+*As built:* a plain `Vec` log, no memo layer, folds as values with host-owned checkpoints (section 11 (d), (g)); the exit criterion was met by the like button in `crates/like-button`, and the second host arrived early as a robot vacuum in `crates/brunhilda` rather than waiting for M3.
 
 ### M1 — Real UI (6–8 weeks)
 - Patch-stream renderer; externref strings.
@@ -234,6 +243,22 @@ Single panel, all derived from the log:
 
 - Working name: **LogFold**.
 - Non-goals for v1: SSR beyond `fold(empty_log)`, Safari-optimised strings, hard real-time control, a component library.
+
+
+## 11. Decisions since v0.1
+
+Each entry is a fact about the code, not a design argument; the argument lives in the rustdoc it points at. Sections above are annotated where superseded and are otherwise left as written.
+
+- **(a) Events are domain-parametric.** `Event<D>` over a `Domain` trait (`Input`, `Sense`, `Effect`) replaces the closed enum of 4.1. `Ui` became `Input`, `Cmd` folded into it, and `Sense` was added for unsolicited world input (a bump, a sighting, a socket message), distinct from `Io`, which answers a request. See `logfold_core::event`.
+- **(b) `Started` is a logged host event.** The host appends it *before* performing an effect. It carries no request id of its own; a result-bearing effect carries its own id through `Action::req`. See `logfold_core::event::Event::started`.
+- **(c) Effects are a diffed projection, not an emitted stream.** A projection returns the set of effects that should be in flight; the host diffs it against the `in_flight` fold (started minus answered) and starts the difference. The desired set is level-triggered: an effect in flight stays desired until it is answered. Fire-and-forget effects stay in `in_flight` forever as the record that they happened. See `logfold_core::effect` and `logfold_core::fold::in_flight`.
+- **(d) A checkpoint is a fold with a different start.** `Fold::from(state, upto)` is the same fold starting from a saved state; the left-fold law (`checkpoint_law`) is what makes it honest. `Checkpoints` is an ordered store of saved states with nearest-at-or-before lookup; when to take one is the host's policy, never the core's. See `logfold_core::fold`.
+- **(e) Outputs are not effects.** The DOM, a canvas, a motor heading: idempotent functions of state that the host diffs against the world every frame and never logs. `Render` is therefore not in any effect type. Actions (a request, an e-stop) are effects and are logged. See `logfold_core::effect` and `brunhilda`.
+- **(f) `Delay` carries only a request id.** The host answers it with an ordinary `Io` event rather than re-injecting an embedded event, so the shim stays dumb. Not yet exercised by an example.
+- **(g) Folds are values, `foldl` style.** Init, step and done, with `run`, `scan`, `map`, `zip` and `scoped`. `scoped` is the declared scope of 3.2. The salsa-style memo of 4.3 is not built; the checkpoint store covers M0's needs. See `logfold_core::fold::Fold`.
+- **(h) Expectations are a fold plus a predicate.** `Expectation::on` checks every prefix in one scan; `raw` is the quadratic escape hatch. The fluent DSL of 4.8 is deferred until there are enough expectations to generalise from. See `logfold_core::expect`.
+- **(i) Text stays in the host, so far only for labels.** Labels cross the boundary as JS string handles made once; numbers cross as numbers. Event keys are plain `String`s inside WASM and never leave it. Text that originates in the browser has no event type yet. See `logfold_web`.
+- **(j) The second host is a simulated robot vacuum, not a chat client.** It exercises time as the driver, outputs versus actions, temporal expectations and dead reckoning against a sim, and it found two safety bugs in the "careful" controller before it held. See `brunhilda`.
 
 ---
 

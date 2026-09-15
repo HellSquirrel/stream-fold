@@ -3,7 +3,7 @@ name = "logfold-web"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
-description = "Browser host for the local like button: the log lives in WASM, the DOM is an output."
+description = "Browser hosts for the like button and Brunhilda: the log lives in WASM, the DOM is an output."
 
 [lib]
 crate-type = ["cdylib", "rlib"]

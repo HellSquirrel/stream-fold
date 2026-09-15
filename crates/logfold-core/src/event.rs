@@ -27,6 +27,9 @@ use std::fmt::Debug;
 use std::hash::Hash;
 
 /// Scope key, e.g. `"post:42"`, `"brunhilda"`, `"conn:feed"`.
+///
+/// A plain `String` for now: a few bytes per event, and it never crosses
+/// the WASM boundary. Swap for an interned id when a measurement asks.
 pub type Key = String;
 
 /// Position in the log. Assigned by [`crate::Log::append`].

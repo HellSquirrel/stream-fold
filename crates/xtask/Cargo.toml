@@ -8,4 +8,4 @@ publish = false
 
 [dependencies]
 logfold-core = { path = "../logfold-core" }
-studio = { path = "../studio" }
+studio = { path = "../../examples/studio" }

@@ -19,6 +19,6 @@ wasm-bindgen = { version = "0.2", optional = true }
 talc = { version = "4", default-features = false, features = ["lock_api"] }
 
 [dev-dependencies]
-like-local = { path = "../like-local" }
-counter = { path = "../counter" }
-studio = { path = "../studio" }
+like-local = { path = "../../examples/like-local" }
+counter = { path = "../../examples/counter" }
+studio = { path = "../../examples/studio" }

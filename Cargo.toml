@@ -2,14 +2,14 @@
 resolver = "3"
 members = [
     "crates/logfold-core",
-    "crates/like-local",
-    "crates/counter",
-    "crates/like-button",
-    "crates/brunhilda",
-    "crates/studio",
     "crates/logfold-web",
-    "crates/apps/*",
     "crates/xtask",
+    "examples/like-local",
+    "examples/counter",
+    "examples/like-button",
+    "examples/brunhilda",
+    "examples/studio",
+    "examples/apps/*",
 ]
 
 [workspace.package]

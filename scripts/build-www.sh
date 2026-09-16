@@ -17,7 +17,7 @@ for app in $apps; do
       "$root/target/wasm32-unknown-unknown/release/${app//-/_}.wasm" -o "$root/www/pkg/$app/${app//-/_}.wasm"
     size "$app" "$root/www/pkg/$app/${app//-/_}.wasm"
   else
-    wasm-pack build "$root/crates/apps/$app" --target web --out-dir "$root/www/pkg/$app" 2>&1 | grep -E "error|Fatal" || true
+    wasm-pack build "$root/examples/apps/$app" --target web --out-dir "$root/www/pkg/$app" 2>&1 | grep -E "error|Fatal" || true
     size "$app" "$root/www/pkg/$app/${app//-/_}_bg.wasm"
   fi
 done

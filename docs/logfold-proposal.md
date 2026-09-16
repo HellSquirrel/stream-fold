@@ -189,7 +189,7 @@ Single panel, all derived from the log:
 - Two expectations fuzzed with proptest.
 **Exit:** double-click dedupe bug found by fuzzer, not by hand.
 
-*As built:* a plain `Vec` log, no memo layer, folds as values with host-owned checkpoints (section 11 (d), (g)); the exit criterion was met by the like button in `crates/like-button`, and the second host arrived early as a robot vacuum in `crates/brunhilda` rather than waiting for M3.
+*As built:* a plain `Vec` log, no memo layer, folds as values with host-owned checkpoints (section 11 (d), (g)); the exit criterion was met by the like button in `examples/like-button`, and the second host arrived early as a robot vacuum in `examples/brunhilda` rather than waiting for M3.
 
 ### M1 — Real UI (6–8 weeks)
 - Patch-stream renderer; externref strings.

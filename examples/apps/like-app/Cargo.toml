@@ -9,7 +9,7 @@ description = "The like button as its own wasm bundle."
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-logfold-web = { path = "../../logfold-web" }
+logfold-web = { path = "../../../crates/logfold-web" }
 like-local = { path = "../../like-local" }
 wasm-bindgen = "0.2"
 

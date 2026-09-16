@@ -6,5 +6,5 @@ license.workspace = true
 description = "Brunhilda's studio: her brain, her world and the control panel as one component on one log."
 
 [dependencies]
-logfold-core = { path = "../logfold-core" }
+logfold-core = { path = "../../crates/logfold-core" }
 brunhilda = { path = "../brunhilda" }

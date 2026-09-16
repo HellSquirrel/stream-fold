@@ -9,5 +9,5 @@ description = "The like button through the raw boundary: no wasm-bindgen, plain 
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-logfold-web = { path = "../../logfold-web", default-features = false }
+logfold-web = { path = "../../../crates/logfold-web", default-features = false }
 like-local = { path = "../../like-local" }

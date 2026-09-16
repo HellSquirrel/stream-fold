@@ -277,7 +277,7 @@ what a like is. Two components on one page are two `mount` calls with a
 
 ## The studio: effects, a simulated world, one log
 
-`crates/studio` is the first real app, and it added the last two things a
+`examples/studio` is the first real app, and it added the last two things a
 component can declare:
 
 - **`effects`**: the effects that should be in flight, from state. After

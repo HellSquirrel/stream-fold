@@ -9,7 +9,7 @@ milestone. Function names are used instead of line numbers; those drift.
 
 ### Brunhilda's planner gives up when you merely stand next to her
 
-`crates/brunhilda/src/lib.rs`, the `blocked` update in `step` and `Policy::plan`.
+`examples/brunhilda/src/lib.rs`, the `blocked` update in `step` and `Policy::plan`.
 
 - **Symptom.** With most of the room dirty, a human stepping adjacent to
   her sends her to the dock for `RETRY_TICKS` ticks. Visible in

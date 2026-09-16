@@ -6,4 +6,4 @@ license.workspace = true
 description = "A second component, to show what adding one costs: three inputs, one number, CSS renders it."
 
 [dependencies]
-logfold-core = { path = "../logfold-core" }
+logfold-core = { path = "../../crates/logfold-core" }

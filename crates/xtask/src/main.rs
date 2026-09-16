@@ -23,7 +23,10 @@ fn generate() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     let out = root.join("www/gen");
     fs::create_dir_all(&out).expect("www/gen");
-    let apps: [(&str, &Manifest); 1] = [("studio", &studio::ui::MANIFEST)];
+    let apps: [(&str, &Manifest); 2] = [
+        ("studio", &studio::ui::MANIFEST),
+        ("todo", &todo::ui::MANIFEST),
+    ];
     for (name, m) in apps {
         fs::write(out.join(format!("{name}.css")), m.css()).expect("write css");
         fs::write(out.join(format!("{name}.manifest.mjs")), m.mjs()).expect("write mjs");

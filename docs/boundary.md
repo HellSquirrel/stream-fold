@@ -60,17 +60,20 @@ timeline, which is a second host for the same log.
 
 | direction | what | encoding |
 |---|---|---|
-| JS → Rust | `dispatch(input)` | integer id from `input_names()` |
+| JS → Rust | `dispatch(input, index, bytes)` | integer id from `input_names()`; the family member the input was fired from, or -1; the UTF-8 of a form field's value, empty for a click. An input ignores what it does not carry |
 | JS → Rust | `tick(ms)` | number |
 | JS → Rust | `render_at(n)` | integer |
-| Rust → JS | patch | `Float64Array` of `[target, kind, name, value]`; kind 0 = custom property, 1 = attribute; `NaN` = clear |
+| Rust → JS | patch | `Float64Array` of `[target, index, kind, name, value]`; kind 0 = custom property, 1 = attribute, 2 = text; `NaN` = clear |
 | Rust → JS | `name(id)` | a JS string handle, fetched once per id and cached by the shim |
+| Rust → JS | `text(i)` | the text input event `i` carried, as a string handle; a kind-2 value is such an `i` |
 | Rust → JS | timeline metadata | numbers and handles, as before |
 
 No string crosses per frame. Names cross once, as handles, the first time an
 id appears. `dispatch` appends the event and returns the patch to the new
 head, so a click is one round trip. An unchanged projection returns an empty
-patch; a tick costs nothing.
+patch; a tick costs nothing. Text crosses when a person types it, once,
+into the log; a text slot points back at it by index, so re-rendering or
+scrubbing never re-sends it.
 
 ## The like button, end to end
 
@@ -135,10 +138,18 @@ Numbers cover appearance. Two things are not appearance and get their own
 slot kind *when an example needs them*, not before:
 
 1. **Text.** A message body cannot come from `content:`; generated content is
-   neither selectable nor fully accessible. That is a `text` slot set from a
-   handle into `textContent`. Labels and glyphs do not need it.
+   neither selectable nor fully accessible. The todo list needed it, so it
+   exists: a `text` slot is written into `textContent`, and its number is
+   the log index of the input event that carried the text. The text
+   itself entered the log as that input's payload (`add: text => Add`),
+   so the log stays the whole story and no string is ever DOM-owned. The
+   shim fetches it by index and writes the target's `[data-text="name"]`
+   child, or the target itself. Labels and glyphs still do not need it.
 2. **Form values.** An input's `value` is a property, not a style. Same
-   second-class slot.
+   second-class slot, still without an example. The todo field is not
+   one: the host never writes it, the shim empties it after Enter. Nor is
+   the todo checkbox: its native toggle is cancelled and the tick is drawn
+   from the row's `data-done` attribute.
 
 Both are still flat writes to a named target. There is still no tree.
 
@@ -149,8 +160,11 @@ Three cases, in order of how often they happen:
 - **Bounded variation** is pre-rendered and toggled by variables. Brunhilda's
   room is 96 cells that always exist; she is one element whose `--x` and
   `--y` change, and a CSS transition makes her glide between cells.
-- **Unbounded lists** get a window: a fixed number of row elements whose
-  contents are projected. A long chat wants this anyway.
+- **Unbounded lists** are a family without a count. The page holds one
+  `<template data-fold="item">`; the first patch that names `item-N` makes
+  the shim clone members up to N, in order. Members are flat, addressed by
+  index, and never removed; a row that is gone is hidden. The todo list
+  is the example. A long chat may still want a window on top of this.
 - **Arbitrary nesting** would need islands cloned from a `<template>` by
   key. No example needs it yet, and the chat client will say whether it is
   real.
@@ -307,9 +321,9 @@ The hand-written canvas host it replaced is gone.
 
 ## The raw boundary
 
-The boundary is fourteen functions over numbers and a few names, so it does
+The boundary is a few functions over numbers and a few names, so it does
 not need wasm-bindgen. `export_raw!` in `logfold-web` puts the same `Host`
-behind `extern "C"` exports, `lf_dispatch(input) -> len`, `lf_patch_ptr()`,
+behind `extern "C"` exports, `lf_dispatch(input, index, len) -> len`, `lf_patch_ptr()`,
 `lf_name_ptr(id)` and `lf_name_len(id)`, one instance per module. The
 loader in `www/logfold-raw.mjs` instantiates the module with no imports,
 decodes each name once from linear memory with `TextDecoder`, and reads a
@@ -328,9 +342,11 @@ the wasm, wasm-bindgen's own share was about 4 KB; most of what looked like
 glue in the profile is the host itself.
 
 What the raw path gives up: `JsValue` handles. Text that originates in the
-browser would need JS String Builtins to be held as a handle without
-copying; until that example exists the raw path is numbers only, which is
-what the design wanted anyway.
+browser goes in as bytes: the loader asks for `lf_scratch(len)`, writes the
+UTF-8 there, and calls `lf_dispatch(input, index, len)`; text comes back out of
+the log as `lf_text_ptr(i)` and `lf_text_len(i)`, decoded by the loader on
+demand. Same shape as names: bytes in linear memory, no handle, no copy the
+module did not already have to make to keep the event.
 
 ## The floor, measured
 

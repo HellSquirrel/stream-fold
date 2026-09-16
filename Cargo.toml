@@ -9,6 +9,7 @@ members = [
     "examples/like-button",
     "examples/brunhilda",
     "examples/studio",
+    "examples/todo",
     "examples/apps/*",
 ]
 

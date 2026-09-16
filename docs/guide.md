@@ -37,6 +37,15 @@ variant per named input, `Ev`, `INPUTS`, and `component()` with the
 manifest attached. Then one line in an app crate exports it as a wasm
 class, and a page mounts it.
 
+An input is a name the page can fire: `toggle => Toggle` becomes
+`Input::Toggle`, and `data-on="click:toggle"` on any element fires it. An
+input that carries what a person typed is `add: text => Add`; its variant
+is `Add(String)`, and `data-on="enter:add"` on a text field fires it with
+the field's value on Enter and empties the field. An input fired from
+inside a family member is `toggle: index => Toggle`; its variant is
+`Toggle(u32)` with the member's index, so a checkbox inside `item-3`
+says "row 3" and the fold decides what row 3 means. See example 4.
+
 ## Example 1: a toggle
 
 The like button, `examples/like-local/src/lib.rs`, without its tests:
@@ -309,11 +318,95 @@ and `www/gen/studio.manifest.mjs` (names, inputs, value tables). The page
 links the CSS and passes the manifest to `mount`. A test fails when either
 is stale.
 
+## Example 4: text, without a string crossing
+
+The todo list, `examples/todo/src/lib.rs`. Typing and pressing Enter adds
+an item; the page shows the items' titles. Yet the boundary still moves
+only numbers. The trick is where the text lives: in the log.
+
+```rust
+logfold_core::component! {
+    pub mod ui;
+    domain Todo;
+    inputs { add: text => Add, toggle: index => Toggle }
+    root { var count: int; }
+    family item { attr present: bool; attr done: bool; text title; }
+    state View;
+    step = step;
+    project = project;
+}
+
+pub struct Item { pub id: u64, pub text: String, pub done: bool }   // id: the log index of the Add
+
+pub fn step(mut v: View, at: u64, ev: &Ev) -> View {
+    match ev {
+        Event::Input { input: Input::Add(text), .. } if !text.trim().is_empty() => {
+            v.items.push(Item { id: at, text: text.trim().to_owned(), done: false });
+            v
+        }
+        Event::Input { input: Input::Toggle(row), .. } => {
+            if let Some(item) = v.items.get_mut(*row as usize) { item.done = !item.done; }
+            v
+        }
+        _ => v,
+    }
+}
+
+pub fn project(v: &View) -> Projection {
+    let mut p = Projection::new().set(ui::count.slot(), v.items.len() as u32);
+    for (row, item) in v.items.iter().enumerate() {
+        p = p.set(ui::item::present.at(row as u32), 1u8)
+             .set(ui::item::done.at(row as u32), u8::from(item.done))
+             .set(ui::item::title.at(row as u32), item.id as f64);
+    }
+    p
+}
+```
+
+Three things to notice. The `Add` event carries the string into the log,
+so the log is still the whole story and the timeline replays titles
+correctly. The step gets the event's own index as its second argument,
+which makes a free, unique item id. And a `text` slot is a number like
+any other: the log index of the input whose text to show. The shim asks
+the app for that text and writes it into the row's `[data-text="title"]`
+child.
+
+The page: a field that adds on Enter, and one template the rows grow from:
+
+```html
+<p><input data-on="enter:add" placeholder="what needs doing? press enter"></p>
+<ul>
+  <template data-fold="item"><li><input type="checkbox" data-on="click:toggle"><span data-text="title"></span></li></template>
+</ul>
+```
+
+```css
+  li[data-fold^="item-"] { display: none; }
+  li[data-fold^="item-"][data-present] { display: flex; }
+  li[data-fold^="item-"] input[type="checkbox"] { appearance: none; /* drawn from the row */ }
+  li[data-fold^="item-"][data-done] input[type="checkbox"] { background: green; }
+  li[data-fold^="item-"][data-done] [data-text="title"] { text-decoration: line-through; }
+```
+
+The checkbox is an input, not state. The shim cancels its native toggle
+(every `data-on` handler calls `preventDefault`), the click reaches the
+fold as `Toggle(row)`, and the row's `data-done` attribute, written by the
+host, is what draws the tick. So scrubbing the timeline unticks it, the
+same as everything else on the page.
+
+`family item { … }` with no count is unbounded. The first patch that
+names `item-N` makes the shim clone the template for every member up to
+N, in order. Members are never removed, so a row that is no longer
+present is hidden by CSS, and which item sits in which row is the
+projection's decision. A family with a count, like the studio's
+`cell(96)`, is pre-rendered instead.
+
 ## Testing without a browser
 
 - **Unit**: fold a hand-written log and assert on the state; project it and
   assert on slots. `component().input_event(i)` gives you the event for
-  input `i`.
+  input `i`; `component().text_event(i, "milk")` gives a text input its
+  text.
 - **Property**: write expectations as a fold plus a predicate with
   `Expectation::on`, and check them on every prefix of a generated log with
   `check_all_prefixes`. `checkpoint_law` checks that resuming from any
@@ -327,12 +420,14 @@ is stale.
 ## Rules that keep it simple
 
 - Numbers cross the boundary; strings do not. Labels and glyphs live in
-  the stylesheet. Text from the browser is the one admitted exception and
-  has no example yet.
+  the stylesheet. Text a person typed goes into the log as an input's
+  payload and comes back to the page by log index through a `text` slot;
+  it is never state the DOM owns.
 - Appearance is never generated. The generator writes registrations,
   constants, names and value tables.
 - Bounded structure is pre-rendered and toggled by numbers. Unbounded lists
-  get a window of fixed rows. Nothing diffs a tree.
+  grow from a template, one flat member per index, never removed. Nothing
+  diffs a tree.
 - Time is the host's: the page owns the clock and calls `tick` or `frame`;
   the fold only ever sees ticks.
 - An effect is a value the fold desires; the host records it before

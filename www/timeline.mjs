@@ -38,8 +38,8 @@ export function timeline(host, container) {
     vars.textContent = JSON.stringify(Object.fromEntries(host.vars));
     const spans = [];
     for (let i = 0; i < n; i++) {
-      const kind = app.kind(i);
-      const label = kind === "tick" ? `tick ${app.tick_ms(i).toFixed(0)}` : kind;
+      const kind = app.kind(i), text = kind === "input" ? app.text?.(i) : undefined;
+      const label = kind === "tick" ? `tick ${app.tick_ms(i).toFixed(0)}` : text !== undefined ? `input “${text}”` : kind;
       const cls = [kind === "input" ? "input" : "", i >= a ? "past" : "", app.checkpoint_for(i + 1) === i + 1 ? "ckpt" : ""].join(" ");
       spans.push(`<span class="${cls}" title="index ${i}">${i}·${label}</span>`);
     }

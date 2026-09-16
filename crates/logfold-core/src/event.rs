@@ -46,6 +46,13 @@ pub trait Domain: 'static {
     type Sense: Clone + Debug + PartialEq + Eq;
     /// Effects the host performs on the domain's behalf.
     type Effect: Clone + Debug + PartialEq + Eq + Ord + Action;
+
+    /// The text an input carries, if it carries any. A `text` slot names
+    /// an input event by log index; the host answers with this. The
+    /// default is none; `component!` overrides it for `name: text` inputs.
+    fn text(_input: &Self::Input) -> Option<&str> {
+        None
+    }
 }
 
 /// An effect's relationship to the world.

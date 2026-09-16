@@ -15,7 +15,7 @@ pub mod log;
 pub mod project;
 pub mod slots;
 
-pub use component::Component;
+pub use component::{Component, InputSpec};
 pub use effect::{EffectDiff, IdemKey, diff_effects};
 pub use event::{Action, Domain, Event, Index, IoResult, Key, Never, Origin, ReqId};
 pub use expect::{Breach, Expectation, Mode, check_all_prefixes, guard};

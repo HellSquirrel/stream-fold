@@ -18,6 +18,7 @@ The examples:
 - `examples/counter` — the second component: three inputs, one number, CSS renders text and a bar from it.
 - `examples/like-button` — the networked like: a request, an honest host, a server model and an adversarial fuzz harness. No page.
 - `examples/brunhilda` — a robot vacuum cleaner as a fold, a simulated room as a host, and a fuzzer that plays the human she keeps attacking.
+- `examples/todo` — a todo list being built step by step; see its module doc for the order. First slice: Enter adds an item with the typed text, without a string crossing the boundary.
 - `examples/studio` — the real app: her brain, her world and the control panel as one component on one log, rendered by 96 projected cells.
 - `examples/apps/*` — one tiny crate per bundle (`like-app`, `counter-app`, `studio-app`, and `like-raw` through the raw boundary).
 - `www/*.html` — the pages; `www/gen/` the generated contracts; `www/pkg/` the built bundles.
@@ -35,7 +36,7 @@ cargo test --workspace
 ```sh
 cargo install wasm-pack            # once
 ./scripts/build-www.sh             # every app bundle into www/pkg/<app>/
-cd www && python3 -m http.server 8765
+scripts/serve.py            # www/ on http://127.0.0.1:8765 with no-cache headers, so a reload is a reload
 # open http://127.0.0.1:8765/index.html      (the like button)
 # open http://127.0.0.1:8765/like-raw.html   (the same button, raw boundary, no wasm-bindgen)
 # open http://127.0.0.1:8765/counter.html    (the counter)
@@ -79,6 +80,8 @@ Since M0:
 - [x] Bundle diet, measured with twiggy: the allocator is `talc` (4 KB instead of dlmalloc's 8), no integer formatting or `format!` on library paths, and the devtools methods are a separate `export_devtools!` so a page without a timeline drops them (0.8 KB). The `core::fmt` that remains is std's panic hook, a floor on stable Rust. B-trees stay because we like them.
 - [x] Every app is its own bundle: `examples/apps/<name>-app` is one `export_component!` line over the `logfold-web` host library, built by `scripts/build-www.sh` into `www/pkg/<app>/`. The like page loads 16 KB brotli instead of 48.
 - [x] **The studio.** Two applications of the framework in one app on one log: the panel (run, policy, dropouts, rate), Brunhilda's brain unchanged, and the world the sim used to keep in memory (you, the latch, the counts), all one fold, because your arrow keys are inputs too. A component can now declare its effects and a simulated world; the host gained `frame(dt)` and records `Started` after every append. The page is 96 cells and three dots positioned by variables; CSS transitions do the gliding; the slider replays the whole session, you included. No canvas.
+- [x] Inputs from inside a family member carry the member's index: `toggle: index => Toggle` is `Toggle(u32)`, and a checkbox inside `item-3` says "row 3". The checkbox's native toggle is cancelled; the tick is drawn from the row's `data-done`, so scrubbing unticks it. Families without a count grow from a `<template>` on first use.
+- [x] Text, still as numbers: an input declared `add: text => Add` carries what was typed into the log as its payload; a `text` slot's number is the log index of that input, and the shim fetches the text by index into the target's `[data-text]` child. The raw boundary gets it as bytes through a scratch buffer both ways. `data-on="enter:add"` on a field fires on Enter and empties it. The todo list is the example.
 - [x] Slots come in two kinds: a CSS custom property or an attribute on the target, one number either way. Attributes are selectable in every browser and visible in the markup; typed `attr()` bridges them into inherited variables (Chrome 133+). The like button now uses `html[data-liked="1"]` selectors; the counter bridges `data-count` and lights its bar with `sibling-index()`.
 - [x] Adding a component is three things you write (state, step, projection) plus a declaration; one `export_component!` line in an app crate; a skeleton page that imports `logfold.mjs` and calls `mount`. The counter renders its number as text with a CSS counter and lights a bar with arithmetic on the same attribute.
 - [x] The boundary, designed and built for the like button: fold state projects to numbers on named targets (`logfold_core::project`); the host writes CSS custom properties and the stylesheet renders. The DOM is `project(fold(log[..at]))`; scrubbing and rendering are one map diff. The page has no like-specific JavaScript. See `docs/boundary.md`.

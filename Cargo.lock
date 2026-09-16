@@ -402,6 +402,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "todo"
+version = "0.0.1"
+dependencies = [
+ "logfold-core",
+]
+
+[[package]]
+name = "todo-app"
+version = "0.0.1"
+dependencies = [
+ "logfold-web",
+ "todo",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "unarray"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -503,6 +519,7 @@ version = "0.0.1"
 dependencies = [
  "logfold-core",
  "studio",
+ "todo",
 ]
 
 [[package]]

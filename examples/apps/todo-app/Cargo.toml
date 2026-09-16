@@ -1,0 +1,17 @@
+[package]
+name = "todo-app"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+description = "The todo list as its own wasm bundle."
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+logfold-web = { path = "../../../crates/logfold-web" }
+todo = { path = "../../todo" }
+wasm-bindgen = "0.2"
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = ["-Oz", "--converge", "--strip-producers", "--strip-target-features", "--low-memory-unused", "--zero-filled-memory", "--enable-bulk-memory", "--enable-nontrapping-float-to-int"]

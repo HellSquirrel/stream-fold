@@ -35,6 +35,10 @@ pub enum SlotKind {
     Var,
     /// An attribute, `data-name`. Visible in markup; feeds selectors and typed `attr()`.
     Attr,
+    /// The text content of the target's `[data-text="name"]` child, or of
+    /// the target itself. The number is the log index of the input event
+    /// that carried the text; the host hands the page the text behind it.
+    Text,
 }
 
 /// Where a slot lives: the document root, an element the skeleton named
@@ -77,6 +81,14 @@ impl Slot {
         Self {
             target,
             kind: SlotKind::Attr,
+            name,
+        }
+    }
+
+    pub const fn text(target: Target, name: Name) -> Self {
+        Self {
+            target,
+            kind: SlotKind::Text,
             name,
         }
     }

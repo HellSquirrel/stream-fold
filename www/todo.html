@@ -1,0 +1,49 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>LogFold: todo</title>
+<!-- the contract, generated from the component's declaration by `cargo xtask gen` -->
+<link rel="stylesheet" href="gen/todo.css">
+<style>
+  /* Appearance lives here and is never generated. Every visible decision
+     follows from an attribute, a variable or a text the host writes. */
+  body { font: 16px/1.5 system-ui, sans-serif; max-width: 40rem; margin: 3rem auto; padding: 0 1rem; color: #222; }
+  nav a { margin-right: 1rem; }
+  .muted { color: #777; font-size: .9rem; }
+  [data-on="enter:add"] { width: 100%; font: inherit; padding: .5rem .75rem; border: 1px solid #bbb; border-radius: 6px; }
+  ul { list-style: none; padding: 0; }
+  /* a row exists only while the host says so */
+  li[data-fold^="item-"] { display: none; padding: .4rem .75rem; border-bottom: 1px solid #eee; }
+  li[data-fold^="item-"][data-present] { display: flex; gap: .75rem; align-items: baseline; }
+  li[data-fold^="item-"]::before { content: counter(row); counter-increment: row; color: #999; font-variant-numeric: tabular-nums; min-width: 1.5ch; }
+  ul { counter-reset: row; }
+  /* the checkbox is an input, not state: the shim cancels its native toggle
+     and the row's data-done attribute, written by the host, draws it */
+  li[data-fold^="item-"] input[type="checkbox"] { appearance: none; margin: 0; width: 1.1em; height: 1.1em; border: 1.5px solid #888; border-radius: 4px; cursor: pointer; align-self: center; }
+  li[data-fold^="item-"][data-done] input[type="checkbox"] { background: #2e7d32 content-box; border-color: #2e7d32; padding: 2px; }
+  li[data-fold^="item-"][data-done] [data-text="title"] { text-decoration: line-through; color: #999; }
+  /* the count as text, from the variable the host writes on the root;
+     the plural is a style query on the same variable */
+  [data-fold="count"]::after { counter-reset: n var(--count); content: counter(n) " items"; }
+  @container style(--count: 1) { [data-fold="count"]::after { content: counter(n) " item"; } }
+</style>
+
+<nav><a href="index.html">like</a><a href="counter.html">counter</a><a href="studio.html">studio</a><a href="todo.html">todo</a></nav>
+<h1>Todo</h1>
+<p><input name="draft" aria-label="new item" data-on="enter:add" placeholder="what needs doing? press enter" autofocus></p>
+<ul>
+  <!-- rows are cloned from this the first time the host names one -->
+  <template data-fold="item"><li><input type="checkbox" aria-label="done" data-on="click:toggle"><span data-text="title"></span></li></template>
+</ul>
+<p class="muted"><span data-fold="count"></span></p>
+<h2>History</h2>
+<div id="history"></div>
+
+<script type="module">
+  import init, { TodoApp } from "./pkg/todo-app/todo_app.js";
+  import manifest from "./gen/todo.manifest.mjs";
+  import { mount } from "./logfold.mjs";
+  import { timeline } from "./timeline.mjs";
+  await init();
+  const host = mount(new TodoApp(), { manifest });
+  timeline(host, document.getElementById("history"));
+</script>

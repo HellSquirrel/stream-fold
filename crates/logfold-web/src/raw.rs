@@ -15,6 +15,8 @@ pub struct Raw<D: Domain, X: Clone + 'static> {
     /// The last patch, kept alive until the next call so the shim can
     /// read it in place.
     patch: Vec<f64>,
+    /// Where the shim writes an input's text before `dispatch`.
+    scratch: Vec<u8>,
     inputs: u32,
 }
 
@@ -25,6 +27,7 @@ impl<D: Domain, X: Clone + 'static> Raw<D, X> {
         Self {
             host,
             patch: Vec::new(),
+            scratch: Vec::new(),
             inputs,
         }
     }
@@ -48,9 +51,25 @@ impl<D: Domain, X: Clone + 'static> Raw<D, X> {
         self.patch.len() as u32
     }
 
-    pub fn dispatch(&mut self, input: u32) -> u32 {
-        let p = self.host.dispatch(input);
+    /// Room for `len` bytes of input text; write them, then `dispatch`
+    /// with the same `len`. The pointer is valid until the next call.
+    pub fn scratch(&mut self, len: u32) -> *mut u8 {
+        self.scratch.clear();
+        self.scratch.resize(len as usize, 0);
+        self.scratch.as_mut_ptr()
+    }
+
+    /// Dispatch `input` from family member `index` (-1 for none) with the
+    /// first `len` bytes of the scratch as its text.
+    pub fn dispatch(&mut self, input: u32, index: i32, len: u32) -> u32 {
+        let n = (len as usize).min(self.scratch.len());
+        let p = self.host.dispatch(input, index, &self.scratch[..n]);
         self.keep(p)
+    }
+
+    /// The text input event `i` carried, as bytes in linear memory.
+    pub fn text(&self, i: u32) -> Option<&str> {
+        self.host.text_at(i)
     }
 
     pub fn tick(&mut self, ms: f64) -> u32 {
@@ -145,8 +164,20 @@ macro_rules! export_raw {
                 with(|a| a.name(id).map_or(0, |s| s.len() as u32))
             }
             #[unsafe(no_mangle)]
-            pub extern "C" fn lf_dispatch(input: u32) -> u32 {
-                with(|a| a.dispatch(input))
+            pub extern "C" fn lf_scratch(len: u32) -> *mut u8 {
+                with(|a| a.scratch(len))
+            }
+            #[unsafe(no_mangle)]
+            pub extern "C" fn lf_dispatch(input: u32, index: i32, len: u32) -> u32 {
+                with(|a| a.dispatch(input, index, len))
+            }
+            #[unsafe(no_mangle)]
+            pub extern "C" fn lf_text_ptr(i: u32) -> *const u8 {
+                with(|a| a.text(i).map_or(std::ptr::null(), str::as_ptr))
+            }
+            #[unsafe(no_mangle)]
+            pub extern "C" fn lf_text_len(i: u32) -> u32 {
+                with(|a| a.text(i).map_or(0, |s| s.len() as u32))
             }
             #[unsafe(no_mangle)]
             pub extern "C" fn lf_tick(ms: f64) -> u32 {
@@ -198,7 +229,7 @@ mod tests {
         assert_eq!(r.input_count(), 1);
         assert_eq!(r.input_name(0), Some("toggle"));
         assert_eq!(r.name(0), Some("root"), "the manifest's names come first");
-        let n = r.dispatch(0);
+        let n = r.dispatch(0, -1, 0);
         assert_eq!(n, 5, "one slot changed: five numbers");
         let patch = unsafe { std::slice::from_raw_parts(r.patch_ptr(), n as usize) };
         assert_eq!(patch[4], 1.0, "data-liked = 1");
@@ -207,5 +238,30 @@ mod tests {
         assert_eq!(r.name(patch[3] as u32), Some("data-liked"));
         assert_eq!(r.render_at(0), 5);
         assert!(r.kind(0) == 0 && r.kind(9) == -1);
+    }
+
+    /// Text goes in through the scratch buffer and comes back out of the log.
+    #[test]
+    fn the_scratch_carries_text_both_ways() {
+        // like-local's toggle carries no text: the scratch is ignored.
+        let mut r = Raw::new(like_local::component());
+        let p = r.scratch(3);
+        unsafe { p.copy_from_nonoverlapping(b"abc".as_ptr(), 3) };
+        assert_eq!(r.dispatch(0, -1, 3), 5);
+        assert_eq!(r.text(0), None);
+        // a length past the scratch is clamped, never read out of bounds
+        assert_eq!(r.dispatch(0, -1, 1000), 5);
+        assert_eq!(r.dispatch(0, -1, 0), 5);
+        // a text input reads exactly `len` bytes of what the shim wrote
+        let mut r = Raw::new(crate::host::tests_support::notes());
+        let p = r.scratch(5);
+        unsafe { p.copy_from_nonoverlapping("héllo".as_bytes().as_ptr(), 5) };
+        assert!(r.dispatch(0, -1, 5) > 0);
+        assert_eq!(
+            r.text(0),
+            Some("héll"),
+            "5 bytes of a 6-byte string, lossily"
+        );
+        assert_eq!(r.text(7), None);
     }
 }

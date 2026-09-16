@@ -78,6 +78,11 @@ mod tests {
         let p = component().projection().run(log.view());
         assert_eq!(p.get(ui::liked.slot()), Some(1.0));
         assert_eq!(p.len(), 1);
-        assert_eq!(INPUTS, [("toggle", Input::Toggle)]);
+        assert_eq!(INPUTS.len(), 1);
+        assert_eq!(INPUTS[0].0, "toggle");
+        assert!(matches!(
+            INPUTS[0].1,
+            logfold_core::InputSpec::Unit(Input::Toggle)
+        ));
     }
 }

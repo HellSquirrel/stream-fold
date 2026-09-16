@@ -1,0 +1,9 @@
+[package]
+name = "todo"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+description = "A todo list, built step by step. Starts empty."
+
+[dependencies]
+logfold-core = { path = "../../crates/logfold-core" }

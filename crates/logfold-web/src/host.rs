@@ -167,10 +167,14 @@ impl<D: Domain, X: Clone + 'static> Host<D, X> {
 
     // ---- inputs: each one appends, lets the host act, and returns the patch to the head ----
 
-    /// The user acted. `input` indexes `input_names`. Unknown ids are
-    /// ignored; the patch to the head is returned either way.
-    pub fn dispatch(&mut self, input: u32) -> Vec<f64> {
-        if let Some(ev) = self.component.input_event(input as usize) {
+    /// The user acted. `input` indexes `input_names`; `index` is the family
+    /// member it was fired from, or -1; `payload` is the UTF-8 text the
+    /// page sent with it, empty for a click. Inputs ignore what they do
+    /// not carry; an index input fired from nowhere, and an unknown id,
+    /// append nothing. The patch to the head is returned either way.
+    pub fn dispatch(&mut self, input: u32, index: i32, payload: &[u8]) -> Vec<f64> {
+        let index = u32::try_from(index).ok();
+        if let Some(ev) = self.component.event_for(input as usize, index, payload) {
             self.append(ev);
             self.act();
         }
@@ -258,6 +262,22 @@ impl<D: Domain, X: Clone + 'static> Host<D, X> {
             })
     }
 
+    /// The text input event `i` carried, if it is one and it did. A `text`
+    /// slot's number is such an `i`.
+    pub fn text_at(&self, i: u32) -> Option<&str> {
+        match self.log.view().get(i as usize) {
+            Some(Event::Input { input, .. }) => D::text(input),
+            _ => None,
+        }
+    }
+
+    /// `text_at` as a JS string handle, or `undefined`.
+    #[cfg(feature = "bindgen")]
+    pub fn text_js(&self, i: u32) -> JsValue {
+        self.text_at(i)
+            .map_or(JsValue::UNDEFINED, JsValue::from_str)
+    }
+
     /// The tick time of event `i`, or NaN if it is not a tick.
     pub fn tick_ms(&self, i: u32) -> f64 {
         match self.log.view().get(i as usize) {
@@ -294,6 +314,8 @@ impl<D: Domain, X: Clone + 'static> Host<D, X> {
     }
 
     /// Encode changes as `[target, index, kind, name, value]`; `NaN` clears.
+    /// Kind 2 is text: the value is the log index of the input event whose
+    /// text to show, which the shim fetches with `text`.
     fn encode(&mut self, changes: &[Change]) -> Vec<f64> {
         let mut out = Vec::with_capacity(changes.len() * 5);
         for c in changes {
@@ -308,6 +330,7 @@ impl<D: Domain, X: Clone + 'static> Host<D, X> {
             out.push(match slot.kind {
                 SlotKind::Var => 0.0,
                 SlotKind::Attr => 1.0,
+                SlotKind::Text => 2.0,
             });
             out.push(self.names.id(slot.name));
             out.push(match c {
@@ -346,8 +369,11 @@ macro_rules! export_component {
             pub fn name(&self, id: u32) -> $crate::wasm_bindgen::JsValue {
                 self.0.name(id)
             }
-            pub fn dispatch(&mut self, input: u32) -> Vec<f64> {
-                self.0.dispatch(input)
+            pub fn dispatch(&mut self, input: u32, index: i32, payload: &[u8]) -> Vec<f64> {
+                self.0.dispatch(input, index, payload)
+            }
+            pub fn text(&self, i: u32) -> $crate::wasm_bindgen::JsValue {
+                self.0.text_js(i)
             }
             pub fn tick(&mut self, ms: f64) -> Vec<f64> {
                 self.0.tick(ms)
@@ -400,7 +426,10 @@ mod tests {
     use logfold_core::{Slot, apply};
 
     /// Decode a patch back into changes, using the host's own name table.
-    fn decode<D: Domain, X: Clone + 'static>(h: &Host<D, X>, patch: &[f64]) -> Vec<Change> {
+    pub(super) fn decode<D: Domain, X: Clone + 'static>(
+        h: &Host<D, X>,
+        patch: &[f64],
+    ) -> Vec<Change> {
         patch
             .chunks(5)
             .map(|c| {
@@ -413,10 +442,10 @@ mod tests {
                     (n, i) if i >= 0.0 => Target::Indexed(n, i as u32),
                     (n, _) => Target::Named(n),
                 };
-                let slot = if c[2] == 0.0 {
-                    Slot::var(target, name)
-                } else {
-                    Slot::attr(target, name)
+                let slot = match c[2] as u8 {
+                    0 => Slot::var(target, name),
+                    1 => Slot::attr(target, name),
+                    _ => Slot::text(target, name),
                 };
                 if c[4].is_nan() {
                     Change::Clear(slot)
@@ -427,7 +456,7 @@ mod tests {
             .collect()
     }
 
-    fn input<D: Domain, X: Clone + 'static>(h: &Host<D, X>, name: &str) -> u32 {
+    pub(super) fn input<D: Domain, X: Clone + 'static>(h: &Host<D, X>, name: &str) -> u32 {
         h.component
             .input_names()
             .position(|n| n == name)
@@ -440,7 +469,7 @@ mod tests {
             let patch = if i % 5 == 4 {
                 h.tick(f64::from(i) * 16.0)
             } else {
-                h.dispatch(i % inputs as u32)
+                h.dispatch(i % inputs as u32, -1, b"")
             };
             apply(&mut dom, &decode(&h, &patch));
             assert_eq!(h.at(), h.len());
@@ -455,7 +484,7 @@ mod tests {
         }
         let patch = h.render_at(3);
         apply(&mut dom, &decode(&h, &patch));
-        let patch = h.dispatch(0);
+        let patch = h.dispatch(0, -1, b"");
         apply(&mut dom, &decode(&h, &patch));
         assert_eq!(h.at(), h.len(), "an input while scrubbed snaps to the head");
         assert_eq!(dom, h.project.run(h.log.view()));
@@ -470,12 +499,145 @@ mod tests {
     #[test]
     fn unchanged_state_costs_nothing() {
         let mut h = Host::new(like_local::component());
-        let _ = h.dispatch(0);
+        let _ = h.dispatch(0, -1, b"");
         assert!(h.tick(16.0).is_empty(), "a tick changes no variable");
         assert!(h.render_at(h.len()).is_empty());
         assert!(
-            h.dispatch(99).is_empty(),
+            h.dispatch(99, -1, b"").is_empty(),
             "an unknown input appends nothing"
+        );
+    }
+}
+
+/// A component whose inputs carry text and whose root shows one; shared
+/// by the host and raw tests.
+#[cfg(test)]
+pub(crate) mod tests_support {
+    pub fn notes() -> logfold_core::Component<notes::Notes, notes::View> {
+        notes::component()
+    }
+
+    pub mod notes {
+        use logfold_core::{Event, Projection};
+
+        logfold_core::component! {
+            pub mod ui;
+            domain Notes;
+            inputs { say: text => Say, clear => Clear, pick: index => Pick }
+            root { text last; var said: int; var picked: int; }
+            state View;
+            step = step;
+            project = project;
+        }
+
+        #[derive(Clone, Debug, Default, PartialEq, Eq)]
+        pub struct View {
+            /// The log index of the last non-empty thing said, if any.
+            pub last: Option<u64>,
+            pub said: u32,
+            /// The last row picked, plus one; 0 for none.
+            pub picked: u32,
+        }
+
+        pub fn step(v: View, at: u64, ev: &Ev) -> View {
+            match ev {
+                Event::Input {
+                    input: Input::Say(s),
+                    ..
+                } if !s.is_empty() => View {
+                    last: Some(at),
+                    said: v.said + 1,
+                    ..v
+                },
+                Event::Input {
+                    input: Input::Clear,
+                    ..
+                } => View { last: None, ..v },
+                Event::Input {
+                    input: Input::Pick(row),
+                    ..
+                } => View {
+                    picked: row + 1,
+                    ..v
+                },
+                _ => v,
+            }
+        }
+
+        pub fn project(v: &View) -> Projection {
+            let p = Projection::new()
+                .set(ui::said.slot(), v.said)
+                .set(ui::picked.slot(), v.picked);
+            match v.last {
+                Some(at) => p.set(ui::last.slot(), at as f64),
+                None => p,
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod text_tests {
+    use super::tests::{decode, input};
+    use super::*;
+    use logfold_core::{Slot, apply};
+
+    #[test]
+    fn text_crosses_as_an_index_into_the_log() {
+        let mut h = Host::new(tests_support::notes());
+        let (say, clear) = (input(&h, "say"), input(&h, "clear"));
+        assert!(h.component.takes_text(say as usize));
+        assert!(!h.component.takes_text(clear as usize));
+
+        let patch = h.dispatch(say, -1, "hello".as_bytes());
+        let changes = decode(&h, &patch);
+        let text = Slot::text(Target::Root, "last");
+        assert!(changes.contains(&Change::Set(text, 0.0)), "{changes:?}");
+        assert!(patch.chunks(5).any(|c| c[2] == 2.0), "kind 2 on the wire");
+        assert_eq!(h.text_at(0), Some("hello"));
+
+        let _ = h.dispatch(say, -1, b"");
+        assert_eq!(
+            h.text_at(1),
+            Some(""),
+            "an empty payload is still the input's text"
+        );
+        let _ = h.dispatch(clear, -1, b"ignored");
+        assert_eq!(h.text_at(2), None, "a unit input carries none");
+        let _ = h.tick(16.0);
+        assert_eq!(h.text_at(3), None, "a tick carries none");
+        assert_eq!(h.text_at(99), None);
+
+        let patch = h.dispatch(say, -1, &[0xff, b'o', b'k']);
+        assert_eq!(
+            h.text_at(4),
+            Some("\u{fffd}ok"),
+            "bad UTF-8 is replaced, never dropped"
+        );
+        assert!(decode(&h, &patch).contains(&Change::Set(text, 4.0)));
+
+        // an index input carries the row it was fired from, or nothing
+        let pick = input(&h, "pick");
+        let picked = Slot::var(Target::Root, "--picked");
+        let patch = h.dispatch(pick, 7, b"");
+        assert!(decode(&h, &patch).contains(&Change::Set(picked, 8.0)));
+        let len = h.len();
+        assert!(
+            h.dispatch(pick, -1, b"").is_empty(),
+            "fired from no member: dropped"
+        );
+        assert_eq!(h.len(), len, "and nothing was appended");
+        assert!(!h.component.takes_text(pick as usize));
+
+        // scrubbing moves the text slot back to the index it had then
+        let patch = h.render_at(1);
+        assert!(decode(&h, &patch).contains(&Change::Set(text, 0.0)));
+        let patch = h.render_at(3);
+        assert!(decode(&h, &patch).contains(&Change::Clear(text)));
+        assert_eq!(
+            h.text_at(0),
+            Some("hello"),
+            "the text is in the log, not the DOM"
         );
     }
 
@@ -489,9 +651,9 @@ mod tests {
             assert_eq!(dom, h.project.run(h.log.view()));
         };
         let (start, run, north) = (input(&h, "start"), input(&h, "run"), input(&h, "north"));
-        let p = h.dispatch(run);
+        let p = h.dispatch(run, -1, b"");
         step(&mut h, p);
-        let p = h.dispatch(start);
+        let p = h.dispatch(start, -1, b"");
         step(&mut h, p);
         for i in 0..300 {
             let p = h.frame(250.0);
@@ -499,7 +661,7 @@ mod tests {
             if i == 100 {
                 // you walk away from your corner so she can finish
                 for _ in 0..6 {
-                    let p = h.dispatch(north);
+                    let p = h.dispatch(north, -1, b"");
                     step(&mut h, p);
                 }
             }
@@ -514,7 +676,7 @@ mod tests {
         assert!(started.is_empty(), "no e-stop was ever started");
         // the e-stop is an effect: dispatching it records a Started and latches
         let estop = input(&h, "estop");
-        let p = h.dispatch(estop);
+        let p = h.dispatch(estop, -1, b"");
         step(&mut h, p);
         let (state, started) = h.now();
         assert!(state.latched);

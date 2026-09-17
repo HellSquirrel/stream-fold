@@ -1,0 +1,150 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>LogFold: bench vs</title>
+<link rel="stylesheet" href="gen/bench.css">
+<style>
+  body { font: 14px/1.4 system-ui, sans-serif; max-width: 64rem; margin: 2rem auto; padding: 0 1rem; color: #222; }
+  nav a { margin-right: 1rem; }
+  button { font: inherit; padding: .3rem .7rem; margin-right: .3rem; }
+  table { border-collapse: collapse; }
+  #results td, #results th { padding: .2rem .6rem; text-align: right; border-bottom: 1px solid #eee; font-variant-numeric: tabular-nums; }
+  #results th:nth-child(-n+3), #results td:nth-child(-n+3) { text-align: left; }
+  .arena { height: 12rem; overflow: auto; border: 1px solid #ddd; margin-top: 1rem; }
+  /* Every table, all three implementations: rows are grid rows with fixed
+     columns, so no cell change re-measures the table, and off-screen rows
+     skip style and layout altogether (content-visibility). */
+  .arena table, .arena tbody { display: block; }
+  .arena tr { display: grid; grid-template-columns: 5rem 1fr 3rem 5rem; align-items: baseline;
+              content-visibility: auto; contain-intrinsic-size: auto 1.7rem; }
+  .arena td { padding: .15rem .6rem; border-bottom: 1px solid #f3f3f3; }
+  tr.selected, tr.danger { background: #ffd; }
+  /* LogFold's rows: the same look, from classes and attributes */
+  #lf tr[data-fold^="row-"] { display: none; }
+  #lf tr[data-fold^="row-"].present { display: grid; }
+  #lf tr[data-fold^="row-"]::before { content: attr(data-id); color: #999; padding: .15rem .6rem; }
+  #lf tr[data-fold^="row-"]::after { content: " !!!×" attr(data-bangs); }
+  #lf tr[data-bangs="0"]::after { content: ""; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
+
+<nav><a href="index.html">like</a><a href="counter.html">counter</a><a href="studio.html">studio</a><a href="todo.html">todo</a><a href="bench.html">bench</a><a href="bench-vs.html">bench vs</a></nav>
+<h1>Bench: LogFold vs vanilla JS vs React 18</h1>
+<p>The same seven operations, the same timing (the operation, then a forced style and layout pass), the same machine.
+  <button id="run">run all at 1k, 10k, 100k</button> <span id="status"></span></p>
+<table id="results"><thead><tr><th>N</th><th>impl</th><th>op</th><th>logic ms</th><th>DOM ms</th><th>style+layout ms</th><th>total ms</th></tr></thead><tbody></tbody></table>
+
+<div class="arena"><table><tbody id="lf">
+  <template data-fold="row"><tr><td class="label"><a data-on="click:select"></a></td><td><a data-on="click:remove">✕</a></td></tr></template>
+</tbody></table></div>
+<div class="arena"><table><tbody id="vanilla"></tbody></table></div>
+<div class="arena"><table><tbody id="react"></tbody></table></div>
+
+<script type="module">
+  import init, { BenchApp } from "./pkg/bench-app/bench_app.js";
+  import manifest from "./gen/bench.manifest.mjs";
+  import { mount } from "./logfold.mjs";
+  await init();
+
+  const ADJ = manifest.slots.adj.values, COL = manifest.slots.colour.values, NOUN = manifest.slots.noun.values;
+  const words = document.createElement("style");
+  words.textContent = ["adj", "colour", "noun"].flatMap((s) => manifest.slots[s].values.map((v) => `#lf tr.${s}-${v} .label a::before { content: "${v} "; }`)).join("\n");
+  document.head.append(words);
+
+  // The same labels as the Rust side would make: a xorshift on (at, id).
+  const label = (at, id) => {
+    let x = ((Math.imul(at, 0x9E3779B9) ^ Math.imul(id, 0x85EBCA6B)) | 1) >>> 0;
+    const next = () => { x ^= x << 13; x >>>= 0; x ^= x >>> 17; x ^= x << 5; x >>>= 0; return x; };
+    return `${ADJ[next() % ADJ.length]} ${COL[next() % COL.length]} ${NOUN[next() % NOUN.length]}`;
+  };
+
+  // ---- LogFold ----
+  const host = mount(new BenchApp(), { root: document.getElementById("lf").parentElement, manifest });
+  const logfold = {
+    create: (n) => host.dispatch("create", String(n)), append: (n) => host.dispatch("append", String(n)),
+    update: () => host.dispatch("update"), select: (n) => host.dispatch("select", "", Math.min(5, n - 1)),
+    swap: () => host.dispatch("swap"), remove: (n) => host.dispatch("remove", "", Math.min(3, n - 1)), clear: () => host.dispatch("clear"),
+    split: () => [host.stats.wasm, host.stats.apply],
+  };
+
+  // ---- vanilla: the reference's shape, keyed rows, direct DOM ----
+  const vb = document.getElementById("vanilla");
+  const vanilla = (() => {
+    let rows = [], nextId = 0, selected = null, at = 0;
+    const build = (n) => Array.from({ length: n }, () => { const id = nextId++; return { id, label: label(at, id), el: null }; });
+    const tr = (r) => { const el = document.createElement("tr"); el.innerHTML = `<td>${r.id}</td><td><a>${r.label}</a></td><td><a>✕</a></td><td></td>`; r.el = el; return el; };
+    const mountRows = (rs) => { const f = document.createDocumentFragment(); for (const r of rs) f.append(tr(r)); vb.append(f); };
+    return {
+      create: (n) => { at++; vb.textContent = ""; rows = build(n); mountRows(rows); selected = null; },
+      append: (n) => { at++; const more = build(n); rows.push(...more); mountRows(more); },
+      update: () => { for (let i = 0; i < rows.length; i += 10) { rows[i].label += " !!!"; rows[i].el.children[1].firstChild.textContent = rows[i].label; } },
+      select: (n) => { const r = rows[Math.min(5, n - 1)]; if (!r) return; if (selected) selected.el.classList.remove("danger"); selected = r; r.el.classList.add("danger"); },
+      swap: () => { if (rows.length > 2) { const a = 1, b = Math.min(998, rows.length - 2); const [ra, rb] = [rows[a], rows[b]]; const after = rb.el.nextSibling; vb.insertBefore(rb.el, ra.el); vb.insertBefore(ra.el, after); rows[a] = rb; rows[b] = ra; } },
+      remove: (n) => { const i = Math.min(3, n - 1); const r = rows[i]; if (!r) return; r.el.remove(); rows.splice(i, 1); },
+      clear: () => { rows = []; selected = null; vb.textContent = ""; },
+      split: () => [0, 0],
+    };
+  })();
+
+  // ---- React 18, hooks, memoised rows, keyed by id ----
+  const h = React.createElement;
+  const Row = React.memo(({ row, selected, onSelect, onRemove }) =>
+    h("tr", { className: selected ? "danger" : "" },
+      h("td", null, row.id), h("td", null, h("a", { onClick: () => onSelect(row.id) }, row.label)), h("td", null, h("a", { onClick: () => onRemove(row.id) }, "✕")), h("td")));
+  let setState;
+  function Table() {
+    const [s, set] = React.useState({ rows: [], selected: null });
+    setState = set;
+    const onSelect = React.useCallback((id) => set((s) => ({ ...s, selected: id })), []);
+    const onRemove = React.useCallback((id) => set((s) => ({ ...s, rows: s.rows.filter((r) => r.id !== id) })), []);
+    return s.rows.map((r) => h(Row, { key: r.id, row: r, selected: s.selected === r.id, onSelect, onRemove }));
+  }
+  ReactDOM.createRoot(document.getElementById("react")).render(h(Table));
+  await new Promise((r) => setTimeout(r, 50));
+  const react = (() => {
+    let nextId = 0, at = 0;
+    const build = (n) => Array.from({ length: n }, () => { const id = nextId++; return { id, label: label(at, id) }; });
+    const sync = (f) => ReactDOM.flushSync(() => setState(f));
+    return {
+      create: (n) => { at++; sync(() => ({ rows: build(n), selected: null })); },
+      append: (n) => { at++; sync((s) => ({ ...s, rows: s.rows.concat(build(n)) })); },
+      update: () => sync((s) => ({ ...s, rows: s.rows.map((r, i) => (i % 10 ? r : { ...r, label: r.label + " !!!" })) })),
+      select: (n) => sync((s) => ({ ...s, selected: s.rows[Math.min(5, n - 1)]?.id ?? null })),
+      swap: () => sync((s) => { if (s.rows.length <= 2) return s; const rows = s.rows.slice(), b = Math.min(998, rows.length - 2); [rows[1], rows[b]] = [rows[b], rows[1]]; return { ...s, rows }; }),
+      remove: (n) => sync((s) => { const i = Math.min(3, n - 1); return i < s.rows.length ? { ...s, rows: s.rows.filter((_, j) => j !== i) } : s; }),
+      clear: () => sync(() => ({ rows: [], selected: null })),
+      split: () => [0, 0],
+    };
+  })();
+
+  // ---- the harness ----
+  const impls = { logfold, vanilla, react };
+  const results = [], body = document.querySelector("#results tbody"), status = document.getElementById("status");
+  const OPS = ["create", "update", "select", "swap", "remove", "append", "clear"];
+  const yieldToBrowser = () => new Promise((r) => setTimeout(r, 0));
+  async function scale(impl, n) {
+    const out = [], it = impls[impl];
+    for (const op of OPS) {
+      const t0 = performance.now(); it[op](n); const t1 = performance.now();
+      void document.body.offsetHeight;
+      const t2 = performance.now();
+      const [logic, dom] = it.split();
+      out.push({ n, impl, op, logic: logic || t1 - t0, dom, layout: t2 - t1, total: t2 - t0 });
+      await yieldToBrowser();
+    }
+    return out;
+  }
+  const fmt = (x) => x.toFixed(x < 10 ? 2 : 0);
+  const render = () => { body.innerHTML = results.map((r) => `<tr><td>${r.n}</td><td>${r.impl}</td><td>${r.op}</td><td>${fmt(r.logic)}</td><td>${r.dom ? fmt(r.dom) : "–"}</td><td>${fmt(r.layout)}</td><td>${fmt(r.total)}</td></tr>`).join(""); };
+  async function run(scales = [1000, 10000, 100000]) {
+    results.length = 0;
+    for (const n of scales) for (const impl of Object.keys(impls)) {
+      status.textContent = `${impl} at N = ${n} …`;
+      results.push(...await scale(impl, n)); render();
+    }
+    status.textContent = "done";
+    return results;
+  }
+  document.getElementById("run").onclick = () => run();
+  window.vs = { scale, run, results, impls };
+</script>

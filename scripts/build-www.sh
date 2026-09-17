@@ -4,7 +4,7 @@
 # wasm-bindgen: plain cargo, then wasm-opt.
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
-apps=${*:-like-app counter-app studio-app todo-app like-raw}
+apps=${*:-like-app counter-app studio-app todo-app bench-app like-raw}
 wasm_opt=$( { find "$HOME/Library/Caches/.wasm-pack" "$HOME/.cache/.wasm-pack" -path "*bin/wasm-opt" -type f 2>/dev/null || true; } | head -1)
 [[ -x $wasm_opt ]] || { echo "wasm-opt not found; run wasm-pack once to fetch it" >&2; exit 1; }
 size() { printf "%-12s wasm %7d bytes, brotli %6d\n" "$1" "$(wc -c < "$2")" "$(brotli -c -q 11 "$2" | wc -c)"; }

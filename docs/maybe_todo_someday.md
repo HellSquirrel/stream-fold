@@ -116,3 +116,13 @@ milestone. Function names are used instead of line numbers; those drift.
   by the chat client, not before.
 - **`in_flight` grows with fire-and-forget effects forever.** By design,
   and checkpointed; note it before a domain fires thousands of them.
+
+## Benchmark the list as divs, not a table
+
+Every number so far is for an HTML `<table>`, first with automatic
+layout, then with rows forced to grid rows and `content-visibility`. The
+same operations should be measured on plain `<div>` rows under
+`display: grid` and under `display: flex`, for all three implementations,
+since a table drags its own layout rules into the result and most real
+lists are not tables. The harness and the component are unchanged; only
+the skeleton and the stylesheet differ.

@@ -20,5 +20,6 @@ talc = { version = "4", default-features = false, features = ["lock_api"] }
 
 [dev-dependencies]
 like-local = { path = "../../examples/like-local" }
+bench = { path = "../../examples/bench" }
 counter = { path = "../../examples/counter" }
 studio = { path = "../../examples/studio" }

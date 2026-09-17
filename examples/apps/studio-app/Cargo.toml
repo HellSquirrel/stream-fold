@@ -13,6 +13,10 @@ logfold-web = { path = "../../../crates/logfold-web" }
 studio = { path = "../../studio" }
 wasm-bindgen = "0.2"
 
+# build.rs writes www/gen/studio.* from the component's manifest
+[build-dependencies]
+studio = { path = "../../studio" }
+
 [package.metadata.wasm-pack.profile.release]
 wasm-opt = ["-Oz", "--converge", "--strip-producers", "--strip-target-features", "--low-memory-unused", "--zero-filled-memory", "--enable-bulk-memory", "--enable-nontrapping-float-to-int"]
 

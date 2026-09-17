@@ -14,7 +14,8 @@ an append-only log, effects are values, time is an event.
    function. There is no other state. Any prefix of the log gives a state;
    a **checkpoint** is the fold resumed from a saved state.
 3. The page is a **projection** of the state: a flat map of numbers onto
-   named targets, written into CSS custom properties and attributes. The
+   named targets, written into CSS custom properties, attributes and
+   classes. The
    stylesheet renders. Moving the page to another log index is a map diff,
    so rendering and scrubbing history are the same operation.
 4. What you write is the state, the step, and the projection. A
@@ -31,6 +32,7 @@ A component is a crate with one declaration and three definitions:
 | `struct View` | the state; `Default` gives the initial value |
 | `fn step(View, Index, &Ev) -> View` | one event in, one state out; pure |
 | `fn project(&View) -> Projection` | numbers onto the declared slots |
+| `project row from rows = project_row;` | optional, for a large family: where its members live (a `TrackedVec`) and how one member is drawn; the framework derives what each event changes. `family row keyed` plus `key = f` addresses members by identity, so removals and moves are cheap |
 
 The declaration expands to the domain marker, an `Input` enum with one
 variant per named input, `Ev`, `INPUTS`, and `component()` with the
@@ -66,7 +68,7 @@ logfold_core::component! {
     pub mod ui;
     domain Like;
     inputs { toggle => Toggle }
-    root { attr liked: bool; }
+    root { class liked; }
     state View;
     step = step;
     project = project;
@@ -90,8 +92,9 @@ pub fn step(v: View, _: u64, ev: &Ev) -> View {
     }
 }
 
-/// One number on the skeleton: `data-liked`, present or absent. The
-/// stylesheet decides what liked looks like; no string for it exists here.
+/// One number on the skeleton: the class `liked` on the root, present or
+/// absent. The stylesheet decides what liked looks like; no string for it
+/// exists here.
 pub fn project(v: &View) -> Projection {
     Projection::new().set(ui::liked.slot(), u8::from(v.liked))
 }
@@ -110,13 +113,13 @@ The page, `www/index.html`. The skeleton names the target and the input:
 <p><button data-fold="like" data-on="click:toggle">like</button> <button id="tick">tick</button></p>
 ```
 
-The stylesheet does everything visible from the attribute the host writes:
+The stylesheet does everything visible from the class the host writes:
 
 ```css
   [data-fold=like] { font-size: 2rem; padding: .5rem 1.5rem; transition: scale .15s, color .15s, border-color .15s; }
   [data-fold=like]::before { content: "♡ "; }
-  html[data-liked="1"] [data-fold=like] { scale: 1.1; color: #d32f2f; border-color: #d32f2f; }
-  html[data-liked="1"] [data-fold=like]::before { content: "♥ "; }
+  html.liked [data-fold=like] { scale: 1.1; color: #d32f2f; border-color: #d32f2f; }
+  html.liked [data-fold=like]::before { content: "♥ "; }
 ```
 
 And the script mounts the class through the generic shim; nothing here is
@@ -270,10 +273,13 @@ logfold_core::slots! {
 }
 ```
 
-Booleans become attributes that are present or absent, enums become
-attributes spelled by name, so the stylesheet reads
-`html[data-mode="cleaning"]` and `html[data-running]`. The `cell` family is
-96 targets named `cell-0` … `cell-95`, each with three boolean attributes.
+Booleans become classes that are present or absent, enums become classes
+spelled `name-value`, so the stylesheet reads `html.mode-cleaning` and
+`html.running`: class selectors are the cheapest to match and to
+invalidate, which matters when a root change restyles 96 cells. Numbers
+that the stylesheet reads with typed `attr()` or selects by value are
+attributes; numbers for `calc()` are variables. The `cell` family is 96
+targets named `cell-0` … `cell-95`, each with three boolean classes.
 Constants come from the same numbers the fold uses.
 
 ```rust
@@ -312,11 +318,12 @@ one. `simulate` is what the world reports in one frame; the host's
 component with a real world, a network or a robot, leaves `simulate` out
 and its page appends senses itself.
 
-Run `cargo xtask gen` and the page's side of the contract is written to
-`www/gen/studio.css` (typed `@property` registrations and the constants)
-and `www/gen/studio.manifest.mjs` (names, inputs, value tables). The page
-links the CSS and passes the manifest to `mount`. A test fails when either
-is stale.
+The app crate's `build.rs` writes the page's side of the contract on every
+build: `www/gen/studio.css` (typed `@property` registrations and the
+constants) and `www/gen/studio.manifest.mjs` (names, inputs, value
+tables). The page links the CSS and passes the manifest to `mount`. The
+fragments are as fresh as the bundle, and nothing in the component knows
+they exist.
 
 ## Example 4: text, without a string crossing
 
@@ -330,7 +337,7 @@ logfold_core::component! {
     domain Todo;
     inputs { add: text => Add, toggle: index => Toggle }
     root { var count: int; }
-    family item { attr present: bool; attr done: bool; text title; }
+    family item { class present; class done; text title; }
     state View;
     step = step;
     project = project;
@@ -382,16 +389,16 @@ The page: a field that adds on Enter, and one template the rows grow from:
 
 ```css
   li[data-fold^="item-"] { display: none; }
-  li[data-fold^="item-"][data-present] { display: flex; }
+  li[data-fold^="item-"].present { display: flex; }
   li[data-fold^="item-"] input[type="checkbox"] { appearance: none; /* drawn from the row */ }
-  li[data-fold^="item-"][data-done] input[type="checkbox"] { background: green; }
-  li[data-fold^="item-"][data-done] [data-text="title"] { text-decoration: line-through; }
+  li[data-fold^="item-"].done input[type="checkbox"] { background: green; }
+  li[data-fold^="item-"].done [data-text="title"] { text-decoration: line-through; }
 ```
 
 The checkbox is an input, not state. The shim cancels its native toggle
 (every `data-on` handler calls `preventDefault`), the click reaches the
-fold as `Toggle(row)`, and the row's `data-done` attribute, written by the
-host, is what draws the tick. So scrubbing the timeline unticks it, the
+fold as `Toggle(row)`, and the row's `done` class, written by the host, is
+what draws the tick. So scrubbing the timeline unticks it, the
 same as everything else on the page.
 
 `family item { … }` with no count is unbounded. The first patch that
@@ -401,12 +408,94 @@ present is hidden by CSS, and which item sits in which row is the
 projection's decision. A family with a count, like the studio's
 `cell(96)`, is pre-rendered instead.
 
+## Big lists: draw the family member by member
+
+`project` writes every slot, and the host diffs the result against what
+the DOM holds. That is always correct and, up to a few thousand slots,
+always fast enough. Past that, every event pays for every slot: selecting
+one row of 100,000 cost 91 ms of pure bookkeeping.
+
+For a large family, say where its members live and how one member is
+drawn, and keep the members in a `TrackedVec`:
+
+```rust
+logfold_core::component! {
+    …
+    family row { class present; class selected; var id: int; … }
+    state State;
+    step = step;
+    project = project;                 // the root slots only
+    project row from rows = project_row, context = selection, affects = affects;
+}
+
+pub struct State { pub rows: TrackedVec<Row>, pub selected: Option<u32>, … }
+
+pub fn project_row(i: u32, r: &Row, selected: &Option<u32>) -> [Change; 7] {
+    [
+        ui::row::present.at(i).set(1u8),
+        ui::row::id.at(i).set(r.id),
+        …
+        if *selected == Some(r.id) { ui::row::selected.at(i).set(1u8) } else { ui::row::selected.at(i).clear() },
+    ]
+}
+pub fn selection(s: &State) -> Option<u32> { s.selected }        // what a row depends on besides itself
+pub fn affects(selected: &Option<u32>, r: &Row) -> bool { *selected == Some(r.id) }
+```
+
+`TrackedVec` is a `Vec` that logs its own mutations: `rows[i].done = true`,
+`rows.push(x)`, `rows.swap(a, b)`, `rows.remove(i)`, `rows.iter_mut()`
+all record what they touched, and reads cost nothing. `step` does not
+change. After each event the host takes the log and, from it, derives
+what the event changed on the page: the touched members redrawn and
+diffed against how they were, the shifted range likewise, members that
+vanished cleared, and the root diffed. The `context` and `affects` pair
+covers a slot that depends on something outside its member: when the
+context changes, the members it affects are redrawn too. Leave both out
+for a family whose members depend only on themselves.
+
+A family whose members come and go, or move, should be `keyed`:
+
+```rust
+    family row keyed { … }
+    …
+    project row from rows = project_row, key = row_key, …;
+
+pub fn row_key(r: &Row) -> u32 { r.id }
+```
+
+Then a member is addressed by its key, `project_row` receives the key
+where it received the position, and the member's position is one more
+number the framework writes, an `order` slot. Removing a row is one
+member gone: the page drops its node, and the rows after it only get a
+new order number, which the shim checks and, finding them in place, does
+nothing about. A swap moves two nodes. Clear drops every node. Nothing
+dead is left in the DOM. A positional family (no `keyed`) is right for a
+list that only grows or changes in place, like the todo list; its members
+are never removed, only hidden.
+
+A bulk change (`clear`, replacing the whole vector) is logged as
+"everything", and the host rebuilds, which is right: everything did
+change. So does a shift over most of the family, because redrawing every
+member costs more than a diff. The rules are: the projection is still a
+pure function of state, `render` gives the whole page at any index, and
+the derived changes must agree with it. `derivative_law` checks that on
+a log, event by event; run it on a generated session the way
+`checkpoint_law` is run.
+
+Measured on the benchmark table at 100,000 rows: select 91 → 2 ms, swap
+89 → 0.7 ms, update every tenth row 99 → 17 ms, and no derivative
+written by hand. `delta = f;` still exists for a component that wants to
+write one; the law checks it the same way.
+
 ## Testing without a browser
 
 - **Unit**: fold a hand-written log and assert on the state; project it and
   assert on slots. `component().input_event(i)` gives you the event for
   input `i`; `component().text_event(i, "milk")` gives a text input its
   text.
+- **Derivative**: `derivative_law(&component(), log.view())` checks that
+  what the framework derives for each event (or a hand-written `delta`)
+  agrees with a full render, event by event.
 - **Property**: write expectations as a fold plus a predicate with
   `Expectation::on`, and check them on every prefix of a generated log with
   `check_all_prefixes`. `checkpoint_law` checks that resuming from any
@@ -439,7 +528,6 @@ projection's decision. A family with a count, like the studio's
 |---|---|
 | `crates/logfold-core` | the runtime: log, events, folds, checkpoints, projection, expectations, `slots!`, `component!` |
 | `crates/logfold-web` | the generic browser host, `export_component!`, `export_devtools!`, `export_raw!` |
-| `crates/xtask` | `cargo xtask gen` |
 | `www/logfold.mjs`, `www/timeline.mjs`, `www/logfold-raw.mjs` | the shim, the devtools, the raw loader |
-| `examples/*` | the components; `examples/apps/*` their bundles; `www/*.html` their pages |
+| `examples/*` | the components; `examples/apps/*` their bundles, whose `build.rs` writes `www/gen/*`; `www/*.html` their pages |
 | `docs/boundary.md` | why the boundary is shaped this way, with measurements |

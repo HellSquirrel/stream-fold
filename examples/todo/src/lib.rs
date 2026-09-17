@@ -1,16 +1,15 @@
 //! A todo list, built step by step.
 //!
-//! This is the first slice: typing something and pressing Enter adds an
-//! item. Nothing can be toggled or removed yet; that is the next slice.
-//! Grow it in this order, and `cargo test -p todo` will tell you when the
-//! page's generated contract is stale:
+//! Typing and pressing Enter adds an item; its checkbox toggles it. Grown
+//! in this order:
 //!
 //! 1. `state`: what a todo list *is*.
 //! 2. `inputs { … }`: what a person can do to it. `add: text => Add`
-//!    carries what was typed; a plain `name => Variant` carries nothing.
+//!    carries what was typed, `toggle: index => Toggle` the row it came
+//!    from; a plain `name => Variant` carries nothing.
 //! 3. `step`: what each input does to the state. Pure.
-//! 4. `root { … }` and `family … { … }`: what the page can show. Then
-//!    `cargo xtask gen` to regenerate `www/gen/todo.*`.
+//! 4. `root { … }` and `family … { … }`: what the page can show. The
+//!    bundle's build writes the page's side into `www/gen/todo.*`.
 //! 5. `project`: the state as numbers on those slots.
 //! 6. `www/todo.html`: the skeleton and the stylesheet.
 //!
@@ -28,7 +27,7 @@ logfold_core::component! {
     domain Todo;
     inputs { add: text => Add, toggle: index => Toggle }
     root { var count: int; }
-    family item { attr present: bool; attr done: bool; text title; }
+    family item { class present; class done; text title; }
     state View;
     step = step;
     project = project;
@@ -72,6 +71,7 @@ pub fn step(mut v: View, at: u64, ev: &Ev) -> View {
             }
             v
         }
+        _ => v,
     }
 }
 
@@ -196,23 +196,5 @@ mod tests {
             }
             _ => unreachable!(),
         }
-    }
-
-    /// The page's fragments are generated from the manifest by
-    /// `cargo xtask gen`; this fails when they are stale.
-    #[test]
-    fn the_generated_fragments_are_current() {
-        let www = concat!(env!("CARGO_MANIFEST_DIR"), "/../../www/gen/");
-        let read = |f: &str| std::fs::read_to_string(format!("{www}{f}")).unwrap_or_default();
-        assert_eq!(
-            read("todo.css"),
-            ui::MANIFEST.css(),
-            "run `cargo xtask gen`"
-        );
-        assert_eq!(
-            read("todo.manifest.mjs"),
-            ui::MANIFEST.mjs(),
-            "run `cargo xtask gen`"
-        );
     }
 }

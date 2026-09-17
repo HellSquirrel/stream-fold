@@ -11,12 +11,13 @@
 //! logfold_core::slots! {
 //!     pub mod slots;
 //!     root {
-//!         attr running: bool;                       // data-running, present or absent
-//!         attr mode: enum { idle, cleaning, docking, stopped };   // data-mode="cleaning"
+//!         class running;                            // html.running, present or absent
+//!         class mode: enum { idle, cleaning, docking, stopped };   // html.mode-cleaning
+//!         attr count: int;                          // data-count="3", for attr() and [data-count="0"]
 //!         var fps: int = 4;                         // --fps, @property <integer>, initial 4
 //!         text status;                              // textContent of [data-text="status"]
 //!     }
-//!     family cell(96) { attr cleaned: bool; }       // targets cell-0 … cell-95
+//!     family cell(96) { class cleaned; }            // targets cell-0 … cell-95
 //!     family row { text title; }                    // unbounded: cloned from <template data-fold="row">
 //!     inputs { run, pause }
 //!     consts { room_w: 12.0, cell_px: 40.0 }
@@ -24,8 +25,11 @@
 //! ```
 //!
 //! Names are the identifiers as written: `var her_x` is `--her_x`,
-//! `attr mode` is `data-mode`. No case or dash rewriting, so what you
-//! read in Rust is what you write in CSS.
+//! `attr count` is `data-count`, `class mode` is `.mode-cleaning`. No case
+//! or dash rewriting, so what you read in Rust is what you write in CSS.
+//! State goes in classes because class selectors are the cheapest to match
+//! and invalidate; attributes carry numbers the stylesheet reads with typed
+//! `attr()` or selects by value.
 
 use std::fmt::Write as _;
 
@@ -34,9 +38,9 @@ use crate::project::{Name, SlotKind};
 /// What a slot's number means, so the shim can spell it for CSS.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum SlotType {
-    /// 1 or 0. As an attribute: present or absent.
+    /// 1 or 0. As a class: present or absent.
     Bool,
-    /// An index into the names. As an attribute: the name.
+    /// An index into the names. As a class: `name-value`.
     Enum(&'static [&'static str]),
     /// An integer. As a variable: `@property` with `<integer>`.
     Int { initial: f64 },
@@ -54,9 +58,12 @@ pub enum TargetDecl {
     /// One slot per member of a family of targets `name-0`, `name-1`, …:
     /// `count` of them pre-rendered on the page, or unbounded, in which
     /// case the shim clones `<template data-fold="name">` on first use.
+    /// A `keyed` family addresses members by a key the component gives,
+    /// not by position; their order is one more number on each member.
     Family {
         name: Name,
         count: Option<u32>,
+        keyed: bool,
     },
 }
 
@@ -100,6 +107,12 @@ impl Manifest {
         }
         for s in self.slots() {
             push(s.name);
+        }
+        if self
+            .slots()
+            .any(|s| matches!(s.target, TargetDecl::Family { keyed: true, .. }))
+        {
+            push("order");
         }
         names
     }
@@ -152,15 +165,18 @@ impl Manifest {
         out.push_str(" },\n  families: {");
         let mut seen_families: Vec<Name> = Vec::new();
         for s in self.slots() {
-            if let TargetDecl::Family { name, count } = s.target
+            if let TargetDecl::Family { name, count, keyed } = s.target
                 && !seen_families.contains(&name)
             {
                 seen_families.push(name);
-                match count {
-                    Some(count) => {
+                match (count, keyed) {
+                    (Some(count), _) => {
                         let _ = write!(out, " {}: {count},", quote(name));
                     }
-                    None => {
+                    (None, true) => {
+                        let _ = write!(out, " {}: \"keyed\",", quote(name));
+                    }
+                    (None, false) => {
                         let _ = write!(out, " {}: null,", quote(name));
                     }
                 }
@@ -176,7 +192,9 @@ impl Manifest {
             let kind = match s.kind {
                 SlotKind::Var => "var",
                 SlotKind::Attr => "attr",
+                SlotKind::Class => "class",
                 SlotKind::Text => "text",
+                SlotKind::Order => "order",
             };
             let ty = match s.ty {
                 SlotType::Bool => "bool: true".to_string(),
@@ -189,6 +207,24 @@ impl Manifest {
         out.push_str("  },\n};\n");
         out
     }
+
+    /// Write the page's side of the contract, `<name>.css` and
+    /// `<name>.manifest.mjs`, into `dir`, touching nothing that is already
+    /// current. For an app crate's `build.rs`, so the fragments are as
+    /// fresh as the bundle.
+    pub fn write_fragments(&self, dir: &std::path::Path, name: &str) -> std::io::Result<()> {
+        std::fs::create_dir_all(dir)?;
+        for (file, body) in [
+            (format!("{name}.css"), self.css()),
+            (format!("{name}.manifest.mjs"), self.mjs()),
+        ] {
+            let path = dir.join(file);
+            if std::fs::read_to_string(&path).ok().as_deref() != Some(&body) {
+                std::fs::write(path, body)?;
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Declare a component's contract. See the module docs for the grammar.
@@ -197,7 +233,7 @@ macro_rules! slots {
     (
         $vis:vis mod $m:ident;
         $( root { $($root:tt)* } )?
-        $( family $fam:ident $( ($count:expr) )? { $($famslots:tt)* } )*
+        $( family $fam:ident $( ($count:expr) )? $( $keyed:ident )? { $($famslots:tt)* } )*
         $( inputs { $($input:ident),* $(,)? } )?
         $( consts { $($cname:ident : $cval:expr),* $(,)? } )?
     ) => {
@@ -216,7 +252,9 @@ macro_rules! slots {
                     pub const NAME: &str = stringify!($fam);
                     /// How many members the page pre-renders; `None` grows from a template.
                     pub const COUNT: Option<u32> = $crate::slots!(@count $($count)?);
-                    const TARGET: TargetDecl = TargetDecl::Family { name: stringify!($fam), count: COUNT };
+                    /// Members addressed by key, not position.
+                    pub const KEYED: bool = $crate::slots!(@keyed $($keyed)?);
+                    const TARGET: TargetDecl = TargetDecl::Family { name: stringify!($fam), count: COUNT, keyed: KEYED };
                     $crate::slots!(@consts (TARGET) $($famslots)*);
                     $crate::slots!(@decls DECLS [] (TARGET) $($famslots)*);
                 }
@@ -235,14 +273,16 @@ macro_rules! slots {
 
     (@count) => { None };
     (@count $count:expr) => { Some($count as u32) };
+    (@keyed) => { false };
+    (@keyed keyed) => { true };
 
     // ---- one `Declared` constant per slot, plus a module of values per enum ----
-    (@consts ($t:expr) attr $n:ident : bool; $($rest:tt)*) => {
-        pub const $n: Declared = Declared { target: $t, kind: SlotKind::Attr, name: concat!("data-", stringify!($n)) };
+    (@consts ($t:expr) class $n:ident; $($rest:tt)*) => {
+        pub const $n: Declared = Declared { target: $t, kind: SlotKind::Class, name: stringify!($n) };
         $crate::slots!(@consts ($t) $($rest)*);
     };
-    (@consts ($t:expr) attr $n:ident : enum { $($v:ident),* $(,)? }; $($rest:tt)*) => {
-        pub const $n: Declared = Declared { target: $t, kind: SlotKind::Attr, name: concat!("data-", stringify!($n)) };
+    (@consts ($t:expr) class $n:ident : enum { $($v:ident),* $(,)? }; $($rest:tt)*) => {
+        pub const $n: Declared = Declared { target: $t, kind: SlotKind::Class, name: stringify!($n) };
         $crate::enum_values!($n { $($v),* });
         $crate::slots!(@consts ($t) $($rest)*);
     };
@@ -265,11 +305,11 @@ macro_rules! slots {
     (@consts ($t:expr)) => {};
 
     // ---- the manifest group: a tt-muncher accumulating one array ----
-    (@decls $name:ident [$($acc:tt)*] ($t:expr) attr $n:ident : bool; $($rest:tt)*) => {
-        $crate::slots!(@decls $name [$($acc)* SlotDecl { target: $t, kind: SlotKind::Attr, name: concat!("data-", stringify!($n)), ty: SlotType::Bool },] ($t) $($rest)*);
+    (@decls $name:ident [$($acc:tt)*] ($t:expr) class $n:ident; $($rest:tt)*) => {
+        $crate::slots!(@decls $name [$($acc)* SlotDecl { target: $t, kind: SlotKind::Class, name: stringify!($n), ty: SlotType::Bool },] ($t) $($rest)*);
     };
-    (@decls $name:ident [$($acc:tt)*] ($t:expr) attr $n:ident : enum { $($v:ident),* $(,)? }; $($rest:tt)*) => {
-        $crate::slots!(@decls $name [$($acc)* SlotDecl { target: $t, kind: SlotKind::Attr, name: concat!("data-", stringify!($n)), ty: SlotType::Enum(&[ $( stringify!($v) ),* ]) },] ($t) $($rest)*);
+    (@decls $name:ident [$($acc:tt)*] ($t:expr) class $n:ident : enum { $($v:ident),* $(,)? }; $($rest:tt)*) => {
+        $crate::slots!(@decls $name [$($acc)* SlotDecl { target: $t, kind: SlotKind::Class, name: stringify!($n), ty: SlotType::Enum(&[ $( stringify!($v) ),* ]) },] ($t) $($rest)*);
     };
     (@decls $name:ident [$($acc:tt)*] ($t:expr) attr $n:ident : int $(= $init:expr)?; $($rest:tt)*) => {
         $crate::slots!(@decls $name [$($acc)* SlotDecl { target: $t, kind: SlotKind::Attr, name: concat!("data-", stringify!($n)), ty: SlotType::Int { initial: 0.0 $(+ $init as f64)? } },] ($t) $($rest)*);
@@ -350,14 +390,16 @@ mod tests {
     crate::slots! {
         pub mod s;
         root {
-            attr running: bool;
-            attr mode: enum { idle, cleaning, docking, stopped };
+            class running;
+            class mode: enum { idle, cleaning, docking, stopped };
+            attr count: int;
             var fps: int = 4;
             var t: num;
             text status;
         }
-        family cell(6) { attr cleaned: bool; text label; }
+        family cell(6) { class cleaned; text label; }
         family row { text title; }
+        family item keyed { class done; }
         inputs { run, pause }
         consts { w: 3.0, px: 40.0 }
     }
@@ -366,7 +408,11 @@ mod tests {
     fn constants_and_manifest_agree() {
         assert_eq!(
             s::running.slot(),
-            crate::project::Slot::attr(Target::Root, "data-running")
+            crate::project::Slot::class(Target::Root, "running")
+        );
+        assert_eq!(
+            s::count.slot(),
+            crate::project::Slot::attr(Target::Root, "data-count")
         );
         assert_eq!(s::fps.slot().name, "--fps");
         assert_eq!(s::mode::cleaning, 1);
@@ -378,16 +424,21 @@ mod tests {
                 "root",
                 "cell",
                 "row",
-                "data-running",
-                "data-mode",
+                "item",
+                "running",
+                "mode",
+                "data-count",
                 "--fps",
                 "--t",
                 "status",
-                "data-cleaned",
+                "cleaned",
                 "label",
-                "title"
+                "title",
+                "done",
+                "order"
             ]
         );
+        assert_eq!([s::item::KEYED, s::row::KEYED], [true, false]);
         assert_eq!(s::cell::COUNT, Some(6));
         assert_eq!(s::row::COUNT, None, "unbounded");
         assert_eq!(s::row::title.at(40).target, Target::Indexed("row", 40));
@@ -412,12 +463,14 @@ mod tests {
         assert!(css.contains("@property --t { syntax: \"<number>\""));
         assert!(css.contains(":root { --w: 3; --px: 40; }"));
         assert!(!css.contains("data-"), "attributes need no registration");
+        assert!(!css.contains("running"), "classes need no registration");
         assert!(!css.contains("status"), "text slots need no registration");
         let mjs = s::MANIFEST.mjs();
         assert!(mjs.contains("\"status\": { kind: \"text\", text: true }"));
-        assert!(mjs.contains("\"data-mode\": { kind: \"attr\", values: [\"idle\", \"cleaning\", \"docking\", \"stopped\"] }"));
-        assert!(mjs.contains("\"data-running\": { kind: \"attr\", bool: true }"));
-        assert!(mjs.contains("families: { \"cell\": 6, \"row\": null, }"));
+        assert!(mjs.contains("\"mode\": { kind: \"class\", values: [\"idle\", \"cleaning\", \"docking\", \"stopped\"] }"));
+        assert!(mjs.contains("\"running\": { kind: \"class\", bool: true }"));
+        assert!(mjs.contains("\"data-count\": { kind: \"attr\", number: true }"));
+        assert!(mjs.contains("families: { \"cell\": 6, \"row\": null, \"item\": \"keyed\", }"));
         assert!(mjs.contains("inputs: [\"run\", \"pause\"]"));
     }
 }

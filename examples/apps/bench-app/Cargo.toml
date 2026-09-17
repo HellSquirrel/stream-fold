@@ -1,21 +1,25 @@
 [package]
-name = "todo-app"
+name = "bench-app"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
-description = "The todo list as its own wasm bundle."
+description = "The benchmark table as its own wasm bundle."
 
 [lib]
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 logfold-web = { path = "../../../crates/logfold-web" }
-todo = { path = "../../todo" }
+bench = { path = "../../bench" }
 wasm-bindgen = "0.2"
 
-# build.rs writes www/gen/todo.* from the component's manifest
+# build.rs writes www/gen/bench.* from the component's manifest
 [build-dependencies]
-todo = { path = "../../todo" }
+bench = { path = "../../bench" }
+
+# examples/phases.rs times the Rust side natively
+[dev-dependencies]
+logfold-core = { path = "../../../crates/logfold-core" }
 
 [package.metadata.wasm-pack.profile.release]
 wasm-opt = ["-Oz", "--converge", "--strip-producers", "--strip-target-features", "--low-memory-unused", "--zero-filled-memory", "--enable-bulk-memory", "--enable-nontrapping-float-to-int"]

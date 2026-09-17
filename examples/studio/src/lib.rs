@@ -160,15 +160,15 @@ pub fn simulate(room: &Room, s: &State, _dt: u64) -> Vec<Ev> {
 logfold_core::slots! {
     pub mod ui;
     root {
-        attr running: bool;
-        attr dropouts: bool;
-        attr policy: enum { naive, careful };
-        attr mode: enum { idle, cleaning, docking, stopped };
-        attr latched: bool;
-        attr attacking: bool;
-        attr heading: enum { none, north, east, south, west };
-        attr seen: bool;
-        attr fresh: bool;
+        class running;
+        class dropouts;
+        class policy: enum { naive, careful };
+        class mode: enum { idle, cleaning, docking, stopped };
+        class latched;
+        class attacking;
+        class heading: enum { none, north, east, south, west };
+        class seen;
+        class fresh;
         var fps: int = 4;
         var her_x: int;
         var her_y: int;
@@ -183,9 +183,9 @@ logfold_core::slots! {
         var ticks: int;
     }
     family cell((brunhilda::W * brunhilda::H)) {
-        attr cleaned: bool;
-        attr furniture: bool;
-        attr dock: bool;
+        class cleaned;
+        class furniture;
+        class dock;
     }
     inputs { run, pause, naive, careful, dropouts, faster, slower, start, dock, estop, north, east, south, west }
     consts { room_w: brunhilda::W, room_h: brunhilda::H, cell_px: 40 }
@@ -345,24 +345,6 @@ mod tests {
         assert!(
             c.manifest.is_some(),
             "the manifest is attached, so ids match the generated page"
-        );
-    }
-
-    /// The page's fragments are generated from the manifest by
-    /// `cargo xtask gen`; this fails when they are stale.
-    #[test]
-    fn the_generated_fragments_are_current() {
-        let www = concat!(env!("CARGO_MANIFEST_DIR"), "/../../www/gen/");
-        let read = |f: &str| std::fs::read_to_string(format!("{www}{f}")).unwrap_or_default();
-        assert_eq!(
-            read("studio.css"),
-            ui::MANIFEST.css(),
-            "run `cargo xtask gen`"
-        );
-        assert_eq!(
-            read("studio.manifest.mjs"),
-            ui::MANIFEST.mjs(),
-            "run `cargo xtask gen`"
         );
     }
 }

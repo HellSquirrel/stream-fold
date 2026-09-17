@@ -101,6 +101,13 @@ impl<E, X: Clone, S> Fold<E, X, S> {
             .fold(self.init.clone(), |x, (i, e)| (self.step)(x, i, e))
     }
 
+    /// One step: the state after event `e` at absolute index `at`. For a
+    /// host that keeps the head state and advances it per event instead
+    /// of re-folding from a checkpoint.
+    pub fn step_one(&self, x: X, at: Index, e: &E) -> X {
+        (self.step)(x, at, e)
+    }
+
     /// Fold the view and return the output.
     pub fn run(&self, log: LogView<'_, E>) -> S {
         (self.done)(&self.state(log))

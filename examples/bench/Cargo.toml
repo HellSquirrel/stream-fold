@@ -1,0 +1,9 @@
+[package]
+name = "bench"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+description = "The js-framework-benchmark table, as a LogFold component."
+
+[dependencies]
+logfold-core = { path = "../../crates/logfold-core" }

@@ -3,13 +3,13 @@ resolver = "3"
 members = [
     "crates/logfold-core",
     "crates/logfold-web",
-    "crates/xtask",
     "examples/like-local",
     "examples/counter",
     "examples/like-button",
     "examples/brunhilda",
     "examples/studio",
     "examples/todo",
+    "examples/bench",
     "examples/apps/*",
 ]
 

@@ -13,7 +13,7 @@ logfold_core::component! {
     pub mod ui;
     domain Like;
     inputs { toggle => Toggle }
-    root { attr liked: bool; }
+    root { class liked; }
     state View;
     step = step;
     project = project;
@@ -37,8 +37,9 @@ pub fn step(v: View, _: u64, ev: &Ev) -> View {
     }
 }
 
-/// One number on the skeleton: `data-liked`, present or absent. The
-/// stylesheet decides what liked looks like; no string for it exists here.
+/// One number on the skeleton: the class `liked` on the root, present or
+/// absent. The stylesheet decides what liked looks like; no string for it
+/// exists here.
 pub fn project(v: &View) -> Projection {
     Projection::new().set(ui::liked.slot(), u8::from(v.liked))
 }

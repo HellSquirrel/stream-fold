@@ -232,10 +232,11 @@ mod tests {
         let n = r.dispatch(0, -1, 0);
         assert_eq!(n, 5, "one slot changed: five numbers");
         let patch = unsafe { std::slice::from_raw_parts(r.patch_ptr(), n as usize) };
-        assert_eq!(patch[4], 1.0, "data-liked = 1");
+        assert_eq!(patch[4], 1.0, "liked = 1");
+        assert_eq!(patch[2], 3.0, "a class");
         assert_eq!(patch[1], -1.0, "not a family member");
         assert_eq!(r.name(patch[0] as u32), Some("root"));
-        assert_eq!(r.name(patch[3] as u32), Some("data-liked"));
+        assert_eq!(r.name(patch[3] as u32), Some("liked"));
         assert_eq!(r.render_at(0), 5);
         assert!(r.kind(0) == 0 && r.kind(9) == -1);
     }

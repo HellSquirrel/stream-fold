@@ -1,0 +1,113 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>LogFold: bench</title>
+<link rel="stylesheet" href="gen/bench.css">
+<style>
+  body { font: 14px/1.4 system-ui, sans-serif; max-width: 60rem; margin: 2rem auto; padding: 0 1rem; color: #222; }
+  nav a { margin-right: 1rem; }
+  button { font: inherit; padding: .3rem .7rem; margin-right: .3rem; }
+  table { border-collapse: collapse; }
+  #results td, #results th { padding: .2rem .6rem; text-align: right; border-bottom: 1px solid #eee; font-variant-numeric: tabular-nums; }
+  #results th:nth-child(2), #results td:nth-child(2) { text-align: left; }
+  #results tr.gap td { color: #d32f2f; font-weight: 600; }
+  /* ---- the table under test ----
+     Rows are grid rows with fixed columns, so no cell change re-measures
+     the table, and off-screen rows skip style and layout (content-visibility).
+     Measured at 100,000 rows: append 5.3 s -> 1.8 s, create 3.9 s -> 1.6 s. */
+  .arena { height: 14rem; overflow: auto; border: 1px solid #ddd; }
+  .arena table, .arena tbody { display: block; }   /* the table must stop being a table, or it measures the rows as one cell */
+  #rows tr[data-fold^="row-"] { display: none; grid-template-columns: 5rem 1fr 3rem 5rem; align-items: baseline;
+                                content-visibility: auto; contain-intrinsic-size: auto 1.7rem; border-bottom: 1px solid #f3f3f3; }
+  #rows tr[data-fold^="row-"].present { display: grid; }
+  #rows tr.selected { background: #ffd; }
+  #rows td { padding: .15rem .6rem; }
+  /* id and bangs are attributes: attr() is per row, unlike a counter, which
+     is sequential and restyles every later row when one changes */
+  #rows tr[data-fold^="row-"]::before { content: attr(data-id); color: #999; padding: .15rem .6rem; }
+  #rows .label a { cursor: pointer; }
+  /* the label is three enum classes; the words are in the stylesheet, built
+     below from the manifest's value tables. "!!!" counts updates. */
+  #rows tr[data-fold^="row-"]::after { content: " !!!×" attr(data-bangs); color: #d32f2f; }
+  #rows tr[data-bangs="0"]::after { content: ""; }
+</style>
+
+<nav><a href="index.html">like</a><a href="counter.html">counter</a><a href="studio.html">studio</a><a href="todo.html">todo</a><a href="bench.html">bench</a></nav>
+<h1>Bench</h1>
+<p>The js-framework-benchmark operations at N = 10, 100, 1 000, … until one of them takes longer than the gap,
+  or the next tenfold step is projected to.
+  <button id="run">run sweep</button> gap <input id="gap" type="number" value="10000" size="6"> ms
+  <span id="status"></span></p>
+<table id="results"><thead><tr><th>N</th><th>op</th><th>wasm ms</th><th>DOM ms</th><th>writes</th><th>style+layout ms</th><th>total ms</th><th>rows in DOM</th></tr></thead><tbody></tbody></table>
+
+<h2>The table</h2>
+<p>
+  <button data-on="click:create" value="1000">create 1,000</button>
+  <button data-on="click:append" value="1000">append 1,000</button>
+  <button data-on="click:update">update every 10th</button>
+  <button data-on="click:swap">swap rows</button>
+  <button data-on="click:clear">clear</button>
+  <span data-fold="count"></span>
+</p>
+<div class="arena"><table><tbody id="rows">
+  <template data-fold="row"><tr><td class="label"><a data-on="click:select"></a></td><td><a data-on="click:remove">✕</a></td></tr></template>
+</tbody></table></div>
+
+<script type="module">
+  import init, { BenchApp } from "./pkg/bench-app/bench_app.js";
+  import manifest from "./gen/bench.manifest.mjs";
+  import { mount } from "./logfold.mjs";
+  await init();
+
+  // The vocabulary as CSS: one rule per enum value, from the manifest.
+  const words = document.createElement("style");
+  words.textContent = ["adj", "colour", "noun"].flatMap((slot) =>
+    manifest.slots[slot].values.map((v) => `#rows tr.${slot}-${v} .label a::before { content: "${v} "; }`)).join("\n");
+  document.head.append(words);
+
+  const host = mount(new BenchApp(), { manifest });
+  const count = document.querySelector('[data-fold="count"]');
+  host.onChange(() => { count.textContent = `${host.vars.get("--count") ?? 0} rows`; });
+
+  // ---- the harness ----
+  const results = [], body = document.querySelector("#results tbody"), status = document.getElementById("status");
+  const ops = (n) => [
+    ["create", () => host.dispatch("create", String(n))],
+    ["update", () => host.dispatch("update")],
+    ["select", () => host.dispatch("select", "", Math.min(5, n - 1))],
+    ["swap", () => host.dispatch("swap")],
+    ["remove", () => host.dispatch("remove", "", Math.min(3, n - 1))],
+    ["append", () => host.dispatch("append", String(n))],
+    ["clear", () => host.dispatch("clear")],
+  ];
+  const yieldToBrowser = () => new Promise((r) => setTimeout(r, 0));
+  async function scale(n) {
+    const out = [];
+    for (const [op, f] of ops(n)) {
+      const t0 = performance.now(); f(); const t1 = performance.now();
+      void document.body.offsetHeight;                 // force style + layout, synchronously
+      const t2 = performance.now();
+      out.push({ n, op, wasm: host.stats.wasm, apply: host.stats.apply, writes: host.stats.writes,
+                 layout: t2 - t1, total: t2 - t0, dom: document.querySelectorAll("#rows tr").length });
+      await yieldToBrowser();
+    }
+    return out;
+  }
+  const fmt = (x) => x.toFixed(x < 10 ? 2 : 0);
+  function render(gap) {
+    body.innerHTML = results.map((r) => `<tr class="${r.total > gap ? "gap" : ""}"><td>${r.n}</td><td>${r.op}</td><td>${fmt(r.wasm)}</td><td>${fmt(r.apply)}</td><td>${r.writes}</td><td>${fmt(r.layout)}</td><td>${fmt(r.total)}</td><td>${r.dom}</td></tr>`).join("");
+  }
+  async function run(gap = Number(document.getElementById("gap").value)) {
+    results.length = 0;
+    for (let n = 10; ; n *= 10) {
+      status.textContent = `N = ${n} …`;
+      const rows = await scale(n);
+      results.push(...rows); render(gap);
+      const worst = Math.max(...rows.map((r) => r.total));
+      if (worst > gap) { status.textContent = `stopped at N = ${n}: an operation took ${worst.toFixed(0)} ms`; break; }
+      if (worst * 10 > gap) { status.textContent = `stopped after N = ${n}: N = ${n * 10} is projected past ${gap} ms (${(worst * 10 / 1000).toFixed(0)} s)`; break; }
+    }
+    return results;
+  }
+  document.getElementById("run").onclick = () => run();
+  window.bench = { host, scale, run, results };
+</script>

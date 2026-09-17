@@ -18,7 +18,7 @@ use std::collections::BTreeSet;
 
 use logfold_core::{
     Change, Checkpoints, Component, Domain, Event, Fold, Log, Name, Projection, SlotKind, Target,
-    diff, diff_effects, in_flight,
+    apply, diff, diff_effects, in_flight,
 };
 #[cfg(feature = "bindgen")]
 use wasm_bindgen::JsValue;
@@ -80,6 +80,10 @@ pub struct Host<D: Domain, X: Clone + 'static> {
     project: Fold<Event<D>, HostState<D, X>, Projection>,
     log: Log<Event<D>>,
     checkpoints: Checkpoints<HostState<D, X>>,
+    /// The state at the head, advanced one step per append. Checkpoints
+    /// are for scrubbing; the head never re-folds. `None` only while a
+    /// step is in flight.
+    head: Option<HostState<D, X>>,
     /// The log index the DOM currently materialises.
     at: usize,
     /// The projection at `at`, which is what the DOM holds.
@@ -95,8 +99,8 @@ impl<D: Domain, X: Clone + 'static> Host<D, X> {
     pub fn new(component: Component<D, X>) -> Self {
         let state = component.fold.clone().zip(in_flight::<D>());
         let project = {
-            let p = component.project.clone();
-            state.clone().map(move |(x, _)| p(x))
+            let c = component.clone();
+            state.clone().map(move |(x, _)| c.render(x))
         };
         // A declared contract fixes the ids: the generated page resolves
         // them from the manifest without asking.
@@ -111,12 +115,14 @@ impl<D: Domain, X: Clone + 'static> Host<D, X> {
                 names.id(n);
             }
         }
+        let head = Some(state.state(Log::new().view()));
         Self {
             component,
             state,
             project,
             log: Log::new(),
             checkpoints: Checkpoints::new(),
+            head,
             at: 0,
             current: Projection::new(),
             clock: 0,
@@ -174,9 +180,26 @@ impl<D: Domain, X: Clone + 'static> Host<D, X> {
     /// append nothing. The patch to the head is returned either way.
     pub fn dispatch(&mut self, input: u32, index: i32, payload: &[u8]) -> Vec<f64> {
         let index = u32::try_from(index).ok();
-        if let Some(ev) = self.component.event_for(input as usize, index, payload) {
-            self.append(ev);
-            self.act();
+        let Some(ev) = self.component.event_for(input as usize, index, payload) else {
+            return self.render_at(self.log.len() as u32);
+        };
+        // The incremental path: the DOM shows the head, the component has a
+        // derivative for this event, and acting on effects appended nothing
+        // more. Then the derivative's changes are the whole patch.
+        let at_head = self.at == self.log.len();
+        let before = self.now();
+        self.append(ev.clone());
+        let started = self.act();
+        if at_head && started == 0 {
+            let head = self
+                .head
+                .as_mut()
+                .expect("the head is only taken during a step");
+            if let Some(changes) = self.component.derive(&before.0, &mut head.0, &ev) {
+                apply(&mut self.current, &changes);
+                self.at = self.log.len();
+                return self.encode(&changes);
+            }
         }
         self.render_at(self.log.len() as u32)
     }
@@ -217,9 +240,12 @@ impl<D: Domain, X: Clone + 'static> Host<D, X> {
     /// the DOM from `at` until the next full `render_at`.
     pub fn render_at(&mut self, n: u32) -> Vec<f64> {
         let n = (n as usize).min(self.log.len());
-        let target = self
-            .checkpoints
-            .output_at(&self.project, self.log.view(), n);
+        let target = if n == self.log.len() {
+            self.component.render(&self.head().0)
+        } else {
+            self.checkpoints
+                .output_at(&self.project, self.log.view(), n)
+        };
         let changes = diff(&self.current, &target);
         self.current = target;
         self.at = n;
@@ -288,38 +314,59 @@ impl<D: Domain, X: Clone + 'static> Host<D, X> {
 
     // ---- internals ----
 
-    /// The state at the head, resumed from the nearest checkpoint.
-    #[inline(never)]
+    fn head(&self) -> &HostState<D, X> {
+        self.head
+            .as_ref()
+            .expect("the head is only taken during a step")
+    }
+
+    /// The state at the head.
     fn now(&self) -> HostState<D, X> {
-        self.checkpoints
-            .output_at(&self.state, self.log.view(), self.log.len())
+        self.head().clone()
     }
 
     /// Record every effect the component wants that is not in flight.
-    fn act(&mut self) {
+    /// Returns how many `Started` events that appended.
+    fn act(&mut self) -> usize {
         let (x, started) = self.now();
         let d = diff_effects(&(self.component.effects)(&x), &started);
+        let n = d.start.len();
         for fx in d.start {
             self.append(Event::started(self.component.key, fx));
         }
+        n
     }
 
     #[inline(never)]
     fn append(&mut self, ev: Event<D>) {
+        let at = self.log.len() as logfold_core::Index;
+        let head = self
+            .head
+            .take()
+            .expect("the head is only taken during a step");
+        self.head = Some(self.state.step_one(head, at, &ev));
         self.log.append(ev);
         let n = self.log.len();
         if due(&self.checkpoints, n, CHECKPOINT_EVERY) {
-            self.checkpoints.take(&self.state, self.log.view(), n);
+            self.checkpoints.insert(n, self.now());
         }
     }
 
     /// Encode changes as `[target, index, kind, name, value]`; `NaN` clears.
-    /// Kind 2 is text: the value is the log index of the input event whose
-    /// text to show, which the shim fetches with `text`.
+    /// Kind 0 is a custom property, 1 an attribute, 2 text (the value is
+    /// the log index of the input event whose text to show, which the shim
+    /// fetches with `text`), 3 a class, 4 a keyed member's order (cleared:
+    /// the member is dropped, so its other clears are not sent).
     fn encode(&mut self, changes: &[Change]) -> Vec<f64> {
         let mut out = Vec::with_capacity(changes.len() * 5);
+        let mut dropped: Option<Target> = None;
         for c in changes {
             let slot = c.slot();
+            match c {
+                Change::Clear(s) if s.kind == SlotKind::Order => dropped = Some(s.target),
+                Change::Clear(s) if Some(s.target) == dropped => continue,
+                _ => {}
+            }
             let (target, index) = match slot.target {
                 Target::Root => ("root", -1.0),
                 Target::Named(n) => (n, -1.0),
@@ -331,6 +378,8 @@ impl<D: Domain, X: Clone + 'static> Host<D, X> {
                 SlotKind::Var => 0.0,
                 SlotKind::Attr => 1.0,
                 SlotKind::Text => 2.0,
+                SlotKind::Class => 3.0,
+                SlotKind::Order => 4.0,
             });
             out.push(self.names.id(slot.name));
             out.push(match c {
@@ -445,7 +494,9 @@ mod tests {
                 let slot = match c[2] as u8 {
                     0 => Slot::var(target, name),
                     1 => Slot::attr(target, name),
-                    _ => Slot::text(target, name),
+                    2 => Slot::text(target, name),
+                    4 => Slot::order(target),
+                    _ => Slot::class(target, name),
                 };
                 if c[4].is_nan() {
                     Change::Clear(slot)
@@ -691,5 +742,96 @@ mod text_tests {
                 "at {n}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod delta_tests {
+    use super::tests::{decode, input};
+    use super::*;
+
+    /// With a derivative, a dispatch at the head applies the derivative's
+    /// changes instead of rebuilding, and the DOM still equals the full
+    /// projection after every event, scrubs included.
+    #[test]
+    fn the_incremental_path_keeps_the_dom_equal_to_the_projection() {
+        let mut h = Host::new(bench::component());
+        let mut dom = Projection::new();
+        let mut n = 0;
+        let mut step = |h: &mut Host<bench::Bench, bench::State>, patch: Vec<f64>| {
+            n += 1;
+            let changes = decode(h, &patch);
+            apply(&mut dom, &changes);
+            // a cleared order drops the member: the shim removes the node, the model clears its slots
+            for c in &changes {
+                if let Change::Clear(s) = c
+                    && s.kind == SlotKind::Order
+                {
+                    let gone: Vec<_> = dom
+                        .iter()
+                        .filter(|(x, _)| x.target == s.target)
+                        .map(|(x, _)| x)
+                        .collect();
+                    for x in gone {
+                        dom.clear(x);
+                    }
+                }
+            }
+            let full = h.project.run(h.log.prefix(h.at() as usize));
+            let wrong = diff(&dom, &full);
+            assert!(
+                wrong.is_empty(),
+                "after step {n} (log {}, at {}): DOM off by {} slots, e.g. {:?}",
+                h.len(),
+                h.at(),
+                wrong.len(),
+                wrong.iter().take(4).collect::<Vec<_>>()
+            );
+            patch.len() / 5
+        };
+        let (create, update, select, swap, remove, append, clear) = (
+            input(&h, "create"),
+            input(&h, "update"),
+            input(&h, "select"),
+            input(&h, "swap"),
+            input(&h, "remove"),
+            input(&h, "append"),
+            input(&h, "clear"),
+        );
+        let p = h.dispatch(create, -1, b"100");
+        assert_eq!(
+            step(&mut h, p),
+            701,
+            "a rebuild: every slot, and an order per row"
+        );
+        let p = h.dispatch(select, 5, b"");
+        assert_eq!(step(&mut h, p), 1, "the derivative: one write");
+        let p = h.dispatch(select, 7, b"");
+        assert_eq!(step(&mut h, p), 2, "one clear, one set");
+        let p = h.dispatch(update, -1, b"");
+        assert_eq!(step(&mut h, p), 10);
+        let p = h.dispatch(swap, -1, b"");
+        assert!(
+            (1..=12).contains(&step(&mut h, p)),
+            "the two swapped rows, changed slots only"
+        );
+        let p = h.dispatch(remove, 90, b"");
+        assert_eq!(
+            step(&mut h, p),
+            1 + 9 + 1,
+            "one drop, nine order numbers, the count"
+        );
+        let p = h.dispatch(append, -1, b"5");
+        step(&mut h, p);
+        // scrub back and forth, then act again from the head
+        for n in [2u32, 0, 5, 7, h.len()] {
+            let p = h.render_at(n);
+            step(&mut h, p);
+        }
+        let p = h.dispatch(select, 1, b"");
+        step(&mut h, p);
+        let p = h.dispatch(clear, -1, b"");
+        step(&mut h, p);
+        assert!(h.checkpoint_count() > 0);
     }
 }

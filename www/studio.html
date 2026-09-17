@@ -18,52 +18,52 @@
   .panel .group { display: inline-flex; }
 
   /* the panel lights whatever the state says */
-  html[data-running] [data-on="click:run"], html:not([data-running]) [data-on="click:pause"],
-  html[data-policy="naive"] [data-on="click:naive"], html[data-policy="careful"] [data-on="click:careful"],
-  html[data-dropouts] [data-on="click:dropouts"] { background: #4a90e2; color: #fff; border-color: #4a90e2; }
-  html[data-latched] [data-on="click:estop"] { background: #d32f2f; color: #fff; border-color: #d32f2f; }
+  html.running [data-on="click:run"], html:not(.running) [data-on="click:pause"],
+  html.policy-naive [data-on="click:naive"], html.policy-careful [data-on="click:careful"],
+  html.dropouts [data-on="click:dropouts"] { background: #4a90e2; color: #fff; border-color: #4a90e2; }
+  html.latched [data-on="click:estop"] { background: #d32f2f; color: #fff; border-color: #d32f2f; }
 
   /* the room: cells that always exist; state paints them. Size and count come from the contract. */
   .room { position: relative; display: grid; grid-template-columns: repeat(var(--room_w), calc(var(--cell_px) * 1px));
           grid-auto-rows: calc(var(--cell_px) * 1px); width: calc(var(--room_w) * var(--cell_px) * 1px); border: 1px solid #bbb; background: #e9e6df; }
   .cell { box-sizing: border-box; border: 1px solid rgba(0,0,0,.08); transition: background .3s; }
-  .cell[data-cleaned] { background: #bfe3c0; }
-  .cell[data-furniture] { background: #8d6e63; }
-  .cell[data-dock] { box-shadow: inset 0 0 0 3px #4a90e2; }
+  .cell.cleaned { background: #bfe3c0; }
+  .cell.furniture { background: #8d6e63; }
+  .cell.dock { box-shadow: inset 0 0 0 3px #4a90e2; }
 
   /* actors: one cell each, positioned by variables; the transition is the gliding */
   .actor { position: absolute; left: 0; top: 0; width: calc(var(--cell_px) * 1px); height: calc(var(--cell_px) * 1px); pointer-events: none;
            transition: translate .25s ease-out, opacity .25s; }
   [data-fold=her] { translate: calc(var(--her_x) * var(--cell_px) * 1px) calc(var(--her_y) * var(--cell_px) * 1px); }
   [data-fold=her]::before { content: ""; position: absolute; inset: 6px; border-radius: 50%; background: #333; transition: background .2s; }
-  html[data-mode="stopped"] [data-fold=her]::before { background: #999; }
-  html[data-attacking] [data-fold=her]::before { background: #d32f2f; }
+  html.mode-stopped [data-fold=her]::before { background: #999; }
+  html.attacking [data-fold=her]::before { background: #d32f2f; }
   [data-fold=her]::after { content: "▲"; position: absolute; inset: 0; display: grid; place-items: center; color: #fff; font-size: 11px; transition: rotate .2s; }
-  html[data-heading="none"] [data-fold=her]::after { content: ""; }
-  html[data-heading="east"] [data-fold=her]::after { rotate: 90deg; }
-  html[data-heading="south"] [data-fold=her]::after { rotate: 180deg; }
-  html[data-heading="west"] [data-fold=her]::after { rotate: 270deg; }
+  html.heading-none [data-fold=her]::after { content: ""; }
+  html.heading-east [data-fold=her]::after { rotate: 90deg; }
+  html.heading-south [data-fold=her]::after { rotate: 180deg; }
+  html.heading-west [data-fold=her]::after { rotate: 270deg; }
   [data-fold=human] { translate: calc(var(--human_x) * var(--cell_px) * 1px) calc(var(--human_y) * var(--cell_px) * 1px); }
   [data-fold=human]::before { content: ""; position: absolute; inset: 8px; border-radius: 50%; background: #2196f3; }
 
   /* what she knows: the last sighting fades with age; the ring while it is fresh and she is careful */
   [data-fold=seen] { translate: calc(var(--seen_x) * var(--cell_px) * 1px) calc(var(--seen_y) * var(--cell_px) * 1px);
                      opacity: clamp(0.15, 1 - var(--seen_age) * 0.25, 1); }
-  html:not([data-seen]) [data-fold=seen] { opacity: 0; }
+  html:not(.seen) [data-fold=seen] { opacity: 0; }
   [data-fold=seen]::before { content: ""; position: absolute; inset: 12px; border-radius: 50%; border: 2px dashed #2196f3; }
   [data-fold=ring] { position: absolute; left: calc(var(--cell_px) * -1px); top: calc(var(--cell_px) * -1px);
                      width: calc(var(--cell_px) * 3px); height: calc(var(--cell_px) * 3px); box-sizing: border-box; pointer-events: none;
                      translate: calc(var(--seen_x) * var(--cell_px) * 1px) calc(var(--seen_y) * var(--cell_px) * 1px);
                      border: 2px dashed rgba(211,47,47,.7); opacity: 0; transition: translate .25s ease-out, opacity .25s; }
-  html[data-policy="careful"][data-fresh] [data-fold=ring] { opacity: 1; }
+  html.policy-careful.fresh [data-fold=ring] { opacity: 1; }
 
   /* status as text: counters from variables, the mode from an attribute */
   .status span[style]::before { counter-reset: n var(--v); content: counter(n); }
-  html[data-mode="idle"] [data-fold=mode]::before { content: "idle"; }
-  html[data-mode="cleaning"] [data-fold=mode]::before { content: "cleaning"; }
-  html[data-mode="docking"] [data-fold=mode]::before { content: "docking"; }
-  html[data-mode="stopped"] [data-fold=mode]::before { content: "stopped"; }
-  html[data-latched] [data-fold=mode]::after { content: " · motors latched"; color: #d32f2f; }
+  html.mode-idle [data-fold=mode]::before { content: "idle"; }
+  html.mode-cleaning [data-fold=mode]::before { content: "cleaning"; }
+  html.mode-docking [data-fold=mode]::before { content: "docking"; }
+  html.mode-stopped [data-fold=mode]::before { content: "stopped"; }
+  html.latched [data-fold=mode]::after { content: " · motors latched"; color: #d32f2f; }
 </style>
 
 <nav><a href="index.html">like</a><a href="like-raw.html">like (raw)</a><a href="counter.html">counter</a><a href="studio.html">studio</a></nav>
@@ -120,7 +120,7 @@
   // the clock: while the state says running, one frame per 1/fps seconds
   (function loop() {
     const fps = host.vars.get("--fps") || 4;
-    if (host.vars.get("data-running") === 1) host.frame(1000 / fps);
+    if (host.vars.get("running") === 1) host.frame(1000 / fps);
     setTimeout(loop, 1000 / fps);
   })();
 </script>

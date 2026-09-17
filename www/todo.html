@@ -13,14 +13,14 @@
   ul { list-style: none; padding: 0; }
   /* a row exists only while the host says so */
   li[data-fold^="item-"] { display: none; padding: .4rem .75rem; border-bottom: 1px solid #eee; }
-  li[data-fold^="item-"][data-present] { display: flex; gap: .75rem; align-items: baseline; }
+  li[data-fold^="item-"].present { display: flex; gap: .75rem; align-items: baseline; }
   li[data-fold^="item-"]::before { content: counter(row); counter-increment: row; color: #999; font-variant-numeric: tabular-nums; min-width: 1.5ch; }
   ul { counter-reset: row; }
   /* the checkbox is an input, not state: the shim cancels its native toggle
-     and the row's data-done attribute, written by the host, draws it */
+     and the row's `done` class, written by the host, draws it */
   li[data-fold^="item-"] input[type="checkbox"] { appearance: none; margin: 0; width: 1.1em; height: 1.1em; border: 1.5px solid #888; border-radius: 4px; cursor: pointer; align-self: center; }
-  li[data-fold^="item-"][data-done] input[type="checkbox"] { background: #2e7d32 content-box; border-color: #2e7d32; padding: 2px; }
-  li[data-fold^="item-"][data-done] [data-text="title"] { text-decoration: line-through; color: #999; }
+  li[data-fold^="item-"].done input[type="checkbox"] { background: #2e7d32 content-box; border-color: #2e7d32; padding: 2px; }
+  li[data-fold^="item-"].done [data-text="title"] { text-decoration: line-through; color: #999; }
   /* the count as text, from the variable the host writes on the root;
      the plural is a style query on the same variable */
   [data-fold="count"]::after { counter-reset: n var(--count); content: counter(n) " items"; }

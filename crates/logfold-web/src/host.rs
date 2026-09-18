@@ -28,6 +28,16 @@ use crate::due;
 use crate::label;
 
 const CHECKPOINT_EVERY: usize = 8;
+/// At most this many checkpoints are kept; beyond it the older half is
+/// thinned by half, so memory is bounded by `CHECKPOINT_BUDGET` clones of
+/// the state and a far-back scrub folds more events instead.
+const CHECKPOINT_BUDGET: usize = 64;
+/// How many events the log keeps behind the head before the horizon
+/// moves. Past it, the horizon jumps to the checkpoint nearest to half
+/// the budget back, so it moves at most once per `LOG_BUDGET / 2` events:
+/// about every 2.3 hours for a 4 fps world, 9 minutes at 60 fps, never
+/// for a page that only sees clicks.
+const LOG_BUDGET: usize = 65_536;
 
 /// The host's checkpointed state: the component's state and what it has started.
 type HostState<D, X> = (X, BTreeSet<<D as Domain>::Effect>);
@@ -71,6 +81,12 @@ pub struct Host<D: Domain, X: Clone + 'static> {
     current: Projection,
     /// Virtual time, advanced by `frame`.
     clock: u64,
+    /// See [`LOG_BUDGET`]; a test lowers it.
+    log_budget: usize,
+    /// What the forgotten events still owe: the text of every text input
+    /// before the horizon, by index, ascending. A `text` slot keeps
+    /// pointing at the index after the event is gone.
+    texts: Vec<(logfold_core::Index, Box<str>)>,
     #[cfg(feature = "bindgen")]
     labels: [JsValue; 5],
 }
@@ -106,6 +122,8 @@ impl<D: Domain, X: Clone + 'static> Host<D, X> {
             at: 0,
             current: Projection::new(),
             clock: 0,
+            log_budget: LOG_BUDGET,
+            texts: Vec::new(),
             #[cfg(feature = "bindgen")]
             labels: [
                 label("input"),
@@ -115,6 +133,13 @@ impl<D: Domain, X: Clone + 'static> Host<D, X> {
                 label("started"),
             ],
         }
+    }
+
+    /// The same host with a smaller log budget, for tests that want to
+    /// see the horizon move.
+    pub fn with_log_budget(mut self, events: usize) -> Self {
+        self.log_budget = events;
+        self
     }
 
     // ---- tables the shim reads once ----
@@ -218,7 +243,7 @@ impl<D: Domain, X: Clone + 'static> Host<D, X> {
     /// makes the next diff correct. A shim that drops one desynchronises
     /// the DOM from `at` until the next full `render_at`.
     pub fn render_at(&mut self, n: u32) -> Vec<f64> {
-        let n = (n as usize).min(self.log.len());
+        let n = (n as usize).clamp(self.log.base(), self.log.len());
         let target = if n == self.log.len() {
             self.component.render(&self.head().0)
         } else {
@@ -256,6 +281,11 @@ impl<D: Domain, X: Clone + 'static> Host<D, X> {
         self.log.len() as u32
     }
 
+    /// The horizon: the first index the page can still show.
+    pub fn base(&self) -> u32 {
+        self.log.base() as u32
+    }
+
     pub fn is_empty(&self) -> bool {
         self.log.is_empty()
     }
@@ -284,6 +314,14 @@ impl<D: Domain, X: Clone + 'static> Host<D, X> {
     /// The text input event `i` carried, if it is one and it did. A `text`
     /// slot's number is such an `i`.
     pub fn text_at(&self, i: u32) -> Option<&str> {
+        if (i as usize) < self.log.base() {
+            let i = logfold_core::Index::from(i);
+            return self
+                .texts
+                .binary_search_by_key(&i, |(j, _)| *j)
+                .ok()
+                .map(|p| &*self.texts[p].1);
+        }
         match self.log.view().get(i as usize) {
             Some(Event::Input { input, .. }) => D::text(input),
             _ => None,
@@ -342,7 +380,35 @@ impl<D: Domain, X: Clone + 'static> Host<D, X> {
         let n = self.log.len();
         if due(&self.checkpoints, n, CHECKPOINT_EVERY) {
             self.checkpoints.insert(n, self.now());
+            self.checkpoints.thin(CHECKPOINT_BUDGET);
         }
+        if n - self.log.base() > self.log_budget {
+            self.forget();
+        }
+    }
+
+    /// Move the horizon to the checkpoint nearest to half the budget
+    /// behind the head. The checkpoint is promoted: the log forgets the
+    /// events before it, the store forgets the checkpoints before it, and
+    /// the text those events carried moves to `texts`. Nothing any fold
+    /// outputs changes; only how far back the page can scrub.
+    fn forget(&mut self) {
+        let target = self.log.len() - self.log_budget / 2;
+        let Some((k, _)) = self.checkpoints.nearest(target) else {
+            return;
+        };
+        if k <= self.log.base() {
+            return;
+        }
+        let texts = &mut self.texts;
+        self.log.advance(k, |i, ev| {
+            if let Event::Input { input, .. } = ev
+                && let Some(t) = D::text(input)
+            {
+                texts.push((i, t.into()));
+            }
+        });
+        self.checkpoints.truncate_before(k);
     }
 
     /// Encode changes as `[target, index, kind, name, value]`; `NaN` clears.
@@ -449,6 +515,9 @@ macro_rules! export_devtools {
             pub fn checkpoint_for(&self, n: u32) -> i32 {
                 self.0.checkpoint_for(n)
             }
+            pub fn base(&self) -> u32 {
+                self.0.base()
+            }
             pub fn checkpoint_count(&self) -> u32 {
                 self.0.checkpoint_count()
             }
@@ -536,6 +605,30 @@ mod tests {
     }
 
     #[test]
+    fn checkpoints_stay_within_budget_and_scrubbing_still_agrees() {
+        let mut h = Host::new(counter::component());
+        let mut dom = Projection::new();
+        for i in 0..2000u32 {
+            let patch = h.dispatch(i % 3, -1, b"");
+            apply(&mut dom, &decode(&h, &patch));
+        }
+        assert!(
+            h.checkpoint_count() as usize <= CHECKPOINT_BUDGET,
+            "{} checkpoints",
+            h.checkpoint_count()
+        );
+        assert!(
+            h.checkpoint_count() > CHECKPOINT_BUDGET as u32 / 2,
+            "thinned too far"
+        );
+        for n in [0u32, 3, 500, 1234, 1999, 2000] {
+            let patch = h.render_at(n);
+            apply(&mut dom, &decode(&h, &patch));
+            assert_eq!(dom, h.project.run(h.log.prefix(n as usize)), "at {n}");
+        }
+    }
+
+    #[test]
     fn the_dom_follows_at_for_every_component() {
         follows(Host::new(like_local::component()), 1);
         follows(Host::new(counter::component()), 3);
@@ -617,6 +710,73 @@ pub(crate) mod tests_support {
                 Some(at) => p.set(ui::last.slot(), at as f64),
                 None => p,
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod horizon_tests {
+    use super::tests::{decode, input};
+    use super::*;
+    use logfold_core::{Slot, apply};
+
+    #[test]
+    fn the_horizon_moves_rarely_and_the_page_keeps_its_text() {
+        let mut h = Host::new(tests_support::notes()).with_log_budget(256);
+        let mut full = Host::new(tests_support::notes());
+        let (say, pick) = (input(&h, "say"), input(&h, "pick"));
+        let mut dom = Projection::new();
+        let mut bases = vec![h.base()];
+        let send = |h: &mut Host<_, _>,
+                    full: &mut Host<_, _>,
+                    dom: &mut Projection,
+                    input,
+                    index,
+                    text: &[u8]| {
+            let patch = h.dispatch(input, index, text);
+            apply(dom, &decode(h, &patch));
+            let _ = full.dispatch(input, index, text);
+        };
+        send(&mut h, &mut full, &mut dom, say, -1, b"hello");
+        for i in 0..800 {
+            send(&mut h, &mut full, &mut dom, pick, i % 5, b"");
+            if bases.last() != Some(&h.base()) {
+                bases.push(h.base());
+            }
+        }
+        // Rare: once per half budget, never more, and always a whole jump.
+        assert!(bases.len() <= 7, "{bases:?}");
+        assert!(bases.windows(2).all(|w| w[1] - w[0] >= 100), "{bases:?}");
+        assert!(
+            h.base() > 0 && h.len() - h.base() <= 256,
+            "{} behind {}",
+            h.base(),
+            h.len()
+        );
+        assert_eq!(
+            h.checkpoint_for(h.base() - 1),
+            -1,
+            "nothing saved before the horizon"
+        );
+        assert!(
+            h.checkpoint_for(h.base()) == h.base() as i32,
+            "the horizon is a checkpoint"
+        );
+
+        // The text said before the horizon is still shown, and still answered.
+        let last = Slot::text(Target::Root, "last");
+        assert!(dom.iter().any(|(s, v)| s == last && v == 0.0));
+        assert_eq!(h.text_at(0), Some("hello"));
+        assert_eq!(h.text_at(1), None, "a pick carried none, so none is kept");
+
+        // Scrubbing stops at the horizon and agrees with a host that forgot nothing.
+        let patch = h.render_at(0);
+        apply(&mut dom, &decode(&h, &patch));
+        assert_eq!(h.at(), h.base());
+        for n in [h.base(), h.base() + 1, h.base() + 37, h.len() - 1, h.len()] {
+            let patch = h.render_at(n);
+            apply(&mut dom, &decode(&h, &patch));
+            assert_eq!(dom, full.project.run(full.log.prefix(n as usize)), "at {n}");
         }
     }
 }

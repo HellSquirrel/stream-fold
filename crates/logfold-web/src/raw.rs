@@ -108,6 +108,10 @@ impl<D: Domain, X: Clone + 'static> Raw<D, X> {
         self.host.checkpoint_for(n)
     }
 
+    pub fn base(&self) -> u32 {
+        self.host.base()
+    }
+
     pub fn kind(&self, i: u32) -> i32 {
         self.host.kind_code(i)
     }
@@ -202,6 +206,10 @@ macro_rules! export_raw {
             #[unsafe(no_mangle)]
             pub extern "C" fn lf_len() -> u32 {
                 with(|a| a.len())
+            }
+            #[unsafe(no_mangle)]
+            pub extern "C" fn lf_base() -> u32 {
+                with(|a| a.base())
             }
             #[unsafe(no_mangle)]
             pub extern "C" fn lf_checkpoint_for(n: u32) -> i32 {

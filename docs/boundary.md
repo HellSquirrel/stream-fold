@@ -83,8 +83,8 @@ scrubbing never re-sends it.
 ```css
 [data-fold=like] { transition: scale .15s, color .15s; }
 [data-fold=like]::before { content: "♡ "; }
-html[data-liked="1"] [data-fold=like] { scale: 1.1; color: #d32f2f; }
-html[data-liked="1"] [data-fold=like]::before { content: "♥ "; }
+html.liked [data-fold=like] { scale: 1.1; color: #d32f2f; }
+html.liked [data-fold=like]::before { content: "♥ "; }
 ```
 ```rust
 pub fn project(v: &View) -> Projection {
@@ -167,9 +167,12 @@ Three cases, in order of how often they happen:
   `--y` change, and a CSS transition makes her glide between cells.
 - **Unbounded lists** are a family without a count. The page holds one
   `<template data-fold="item">`; the first patch that names `item-N` makes
-  the shim clone members up to N, in order. Members are flat, addressed by
-  index, and never removed; a row that is gone is hidden. The todo list
-  is the example. A long chat may still want a window on top of this.
+  the shim create members up to N, in order, as one HTML string. A
+  positional family's members are flat, addressed by index, and never
+  removed; a row that is gone is hidden. The todo list is the example. A
+  `keyed` family addresses members by a key the component gives, carries
+  each member's position as an `order` number, and the page drops and
+  moves real nodes; the benchmark table is the example.
 - **Arbitrary nesting** would need islands cloned from a `<template>` by
   key. No example needs it yet, and the chat client will say whether it is
   real.
@@ -242,7 +245,7 @@ logfold_core::component! {
     pub mod ui;
     domain Like;
     inputs { toggle => Toggle }
-    root { attr liked: bool; }
+    root { class liked; }
     state View;
     step = step;
     project = project;
@@ -288,10 +291,11 @@ mount(new LikeApp());
 ```
 
 Pass `{ manifest }` from the generated module to `mount` and the shim
-spells booleans by presence and enums by name, `html[data-liked]`; without
-it, numbers, as above. `mount` installs one delegated listener per event
-type the skeleton mentions, resolves `data-on` names to input ids once, and
-applies patches. `timeline` is a second host for the same log. Neither knows
+spells an enum class by its value's name, `html.mode-cleaning`; a boolean
+class is present or absent either way, and numbers are numbers. Names
+behind ids come from the app, once per id. `mount` installs one delegated
+listener per event type the skeleton mentions, resolves `data-on` names to
+input ids once, and applies patches. `timeline` is a second host for the same log. Neither knows
 what a like is. Two components on one page are two `mount` calls with a
 `root` option each.
 
@@ -771,8 +775,9 @@ declined: we like B-trees.
   from the same numbers.
 - **Browser support.** Style container queries and `@property` are 2023 to
   2025 features; verified in the user's Chrome, not yet in Firefox or Safari.
-  The fallback is a `data-liked` attribute selected by `[data-liked="1"]`,
-  which is the same design with older syntax.
+  Classes and attributes need nothing new; only `@property`, style
+  queries and typed `attr()` do, and each has a plainer fallback in the
+  same design.
 - **Rust as the shim.** The shim is a dozen lines of JavaScript. It could be
   Rust through `web-sys`, at which point the page is HTML, CSS and `init()`.
   Not worth it until there is a reason to remove the JavaScript entirely.

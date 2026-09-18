@@ -297,6 +297,53 @@ impl<X: Clone> Checkpoints<X> {
     pub fn truncate_after(&mut self, n: usize) {
         self.by_upto.split_off(&(n + 1));
     }
+
+    /// Drop every saved state with `upto < n`. Use when the log's horizon
+    /// moves to `n`: nothing before it can be asked for any more.
+    pub fn truncate_before(&mut self, n: usize) {
+        // Rebuilt by insertion, like `thin`: `split_off` is tree machinery
+        // nothing in a bundle links otherwise, and this runs once per
+        // horizon move over at most a budget of entries.
+        let old = std::mem::take(&mut self.by_upto);
+        for (upto, state) in old {
+            if upto >= n {
+                self.by_upto.insert(upto, state);
+            }
+        }
+    }
+
+    /// Keep at most `budget` saved states. Over budget, every other state
+    /// in the older half is dropped, the oldest always kept, so history
+    /// thins with age: the newest states keep their spacing, the tier
+    /// behind them is twice as sparse, the one behind that four times, and
+    /// so on, all the way back to the first checkpoint. Memory is bounded
+    /// by `budget` clones of the state; what grows instead is the number
+    /// of events a far-back resume has to fold, and only far back.
+    ///
+    /// Thinning never changes an output: [`Checkpoints::output_at`] is the
+    /// same function of the log with or without it (the left-fold law).
+    pub fn thin(&mut self, budget: usize) {
+        let budget = budget.max(1);
+        while self.by_upto.len() > budget {
+            let len = self.by_upto.len();
+            // By rank, oldest first: every other one in the older half,
+            // never the oldest or the newest. Below four there is no half
+            // to thin: the second oldest goes, or the oldest itself when
+            // only the newest fits. Rebuilt by insertion rather than
+            // `remove`d: removal is B-tree machinery nothing else links.
+            let fallback = (len < 4).then_some(usize::from(len > 2));
+            let old = std::mem::take(&mut self.by_upto);
+            for (rank, (upto, state)) in old.into_iter().enumerate() {
+                let drop = match fallback {
+                    Some(f) => rank == f,
+                    None => rank % 2 == 1 && rank < len / 2,
+                };
+                if !drop {
+                    self.by_upto.insert(upto, state);
+                }
+            }
+        }
+    }
 }
 
 /// Virtual time: the most recent `Tick`, 0 before any.
@@ -469,6 +516,75 @@ mod tests {
         store.truncate_after(5);
         assert_eq!(store.len(), 1);
         assert_eq!(store.nearest(99).map(|(u, _)| u), Some(4));
+    }
+
+    #[test]
+    fn a_promoted_checkpoint_is_a_horizon() {
+        let full: Log<Ev> = (1..=40).map(Ev::tick).collect();
+        let f = ticks();
+        let mut store = Checkpoints::new();
+        for n in (8..=40).step_by(8) {
+            store.take(&f, full.view(), n);
+        }
+        let mut log = full.clone();
+        log.advance(16, |_, _| {});
+        store.truncate_before(16);
+        assert_eq!(store.len(), 4);
+        assert_eq!(store.nearest(15), None);
+        for n in 16..=40 {
+            assert_eq!(
+                store.output_at(&f, log.view(), n),
+                f.run(full.prefix(n)),
+                "n = {n}: the tail from the horizon folds like the whole"
+            );
+        }
+    }
+
+    #[test]
+    fn thinning_bounds_the_store_and_changes_no_output() {
+        let log: Log<Ev> = (1..=1000).map(Ev::tick).collect();
+        let f = ticks();
+        let mut store = Checkpoints::new();
+        for n in (8..=1000).step_by(8) {
+            store.take(&f, log.view(), n);
+            store.thin(16);
+            assert!(store.len() <= 16, "at {n}: {} saved", store.len());
+        }
+        // The newest tier is still dense, the oldest sparse.
+        assert_eq!(store.nearest(1000).map(|(u, _)| u), Some(1000));
+        assert_eq!(store.nearest(999).map(|(u, _)| u), Some(992));
+        let kept: Vec<usize> = (0..=1000)
+            .filter(|&n| store.nearest(n).is_some_and(|(u, _)| u == n))
+            .collect();
+        assert_eq!(kept[0], 8, "the first checkpoint is never dropped");
+        assert!(
+            kept.windows(2).any(|w| w[1] - w[0] > 8),
+            "history never thinned"
+        );
+        assert!(
+            kept.windows(2).all(|w| w[1] - w[0] >= 8),
+            "spacing never below the cadence"
+        );
+        assert!(
+            kept.iter()
+                .rev()
+                .take(4)
+                .collect::<Vec<_>>()
+                .windows(2)
+                .all(|w| w[0] - w[1] == 8),
+            "newest tier dense"
+        );
+        for n in [0, 1, 7, 8, 100, 493, 777, 992, 999, 1000] {
+            assert_eq!(
+                store.output_at(&f, log.view(), n),
+                f.run(log.prefix(n)),
+                "n = {n}"
+            );
+        }
+        // A budget of 0 still keeps one: the head's.
+        store.thin(0);
+        assert_eq!(store.len(), 1);
+        assert_eq!(store.nearest(1000).map(|(u, _)| u), Some(1000));
     }
 
     #[test]

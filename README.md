@@ -1,7 +1,8 @@
 # LogFold
 
 An event-log runtime: the UI is `render(fold(log))`, effects are values,
-time is an event. Design document: [`docs/logfold-proposal.md`](docs/logfold-proposal.md).
+time is an event. Start with [`docs/architecture.md`](docs/architecture.md);
+the original design is [`docs/logfold-proposal.md`](docs/logfold-proposal.md).
 
 ## Layout
 
@@ -18,12 +19,12 @@ The examples:
 - `examples/like-button` — the networked like: a request, an honest host, a server model and an adversarial fuzz harness. No page.
 - `examples/brunhilda` — a robot vacuum cleaner as a fold, a simulated room as a host, and a fuzzer that plays the human she keeps attacking.
 - `examples/todo` — a todo list being built step by step; see its module doc for the order. First slice: Enter adds an item with the typed text, without a string crossing the boundary.
-- `examples/bench` — the js-framework-benchmark table (create, update, select, swap, remove, append, clear) with an in-page harness that sweeps N = 10, 100, 1 000, … and stops at a time gap; `www/bench-vs.html` runs the same operations against vanilla JS and React 18 in the same tab. Numbers in `docs/boundary.md`.
+- `examples/bench` — the js-framework-benchmark table (create, update, select, swap, remove, append, clear) as a keyed family, with an in-page harness that sweeps N = 10, 100, 1 000, … and stops at a time gap; `www/bench-vs.html` runs the same operations against vanilla JS and React 18 in the same tab, and the official driver ran it against vanilla and React 19. Numbers in `docs/benchmark.md`.
 - `examples/studio` — the real app: her brain, her world and the control panel as one component on one log, rendered by 96 projected cells.
-- `examples/apps/*` — one tiny crate per bundle (`like-app`, `counter-app`, `studio-app`, and `like-raw` through the raw boundary).
+- `examples/apps/*` — one tiny crate per bundle (`like-app`, `counter-app`, `studio-app`, `todo-app`, `bench-app`, and `like-raw` through the raw boundary); a `build.rs` there writes the page's generated contract.
 - `www/*.html` — the pages; `www/gen/` the generated contracts; `www/pkg/` the built bundles.
 
-How to build a component: [`docs/guide.md`](docs/guide.md). Benchmark results: [`docs/benchmark.md`](docs/benchmark.md). Why the boundary looks like this, with measurements: [`docs/boundary.md`](docs/boundary.md). Design record: [`docs/logfold-proposal.md`](docs/logfold-proposal.md). Deferred work: [`docs/maybe_todo_someday.md`](docs/maybe_todo_someday.md).
+The architecture, what lives where and every decision with its reason: [`docs/architecture.md`](docs/architecture.md). How to build a component: [`docs/guide.md`](docs/guide.md). Benchmark results: [`docs/benchmark.md`](docs/benchmark.md). Why the boundary looks like this, with measurements: [`docs/boundary.md`](docs/boundary.md). Design record: [`docs/logfold-proposal.md`](docs/logfold-proposal.md). Deferred work: [`docs/maybe_todo_someday.md`](docs/maybe_todo_someday.md).
 
 ## Run
 
@@ -46,10 +47,11 @@ scripts/serve.py            # www/ on http://127.0.0.1:8765 with no-cache header
 # open http://127.0.0.1:8765/bench-vs.html   (the same operations vs vanilla JS and React 18)
 ```
 
-Bundle sizes after wasm-opt, brotli in brackets: like 43 KB (15) plus 8 KB (2) of generated glue, like-raw 39 KB (14) with no glue file, counter 43 KB (15), studio 94 KB (30). The previous single bundle carrying everything was 168 KB (48). What is in them and why is in `docs/boundary.md`.
+Bundle sizes after wasm-opt, brotli in brackets: like 50 KB (18) plus 10 KB (2) of generated glue, like-raw 46 KB (17) with no glue file, counter 50 KB (18), todo 55 KB (20), bench 74 KB (27), studio 107 KB (36). The first single bundle carrying everything was 168 KB (48); the like button was 43 KB before derivatives, keyed families and interned names, which is what the difference bought. What is in them and why is in `docs/boundary.md`.
 
-The shim in `www/index.html` appends an event per click, writes the view
-into the DOM, and asks for the view at any index when the slider moves.
+The shim, `www/logfold.mjs`, appends an event per input, writes the
+patch into the DOM, and asks for the page at any index when the slider
+moves.
 Checkpoints are taken roughly every 8 events, decided by the host, and the provenance line
 shows which one the scrubber resumed from.
 

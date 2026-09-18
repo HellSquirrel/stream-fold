@@ -230,6 +230,12 @@ The typed `attr()` bridge, `html { --count: attr(data-count type(<integer>), 0);
 turns the attribute into an inherited variable, so both the selector world
 and the `calc()` world see the same number from one write.
 
+A CSS counter is the right way to show one number. It is the wrong way to
+show a number per row: a counter's value depends on every element before
+it, so changing one row's counter restyles every row after it. Per-row
+numbers are attributes shown with `content: attr(data-id)`, which is per
+element; the benchmark table does that.
+
 ## Example 3: a component with a world
 
 Brunhilda's studio, `examples/studio/src/lib.rs`, is the real app: a
@@ -241,15 +247,15 @@ it has senses, effects and a simulated world:
 logfold_core::slots! {
     pub mod ui;
     root {
-        attr running: bool;
-        attr dropouts: bool;
-        attr policy: enum { naive, careful };
-        attr mode: enum { idle, cleaning, docking, stopped };
-        attr latched: bool;
-        attr attacking: bool;
-        attr heading: enum { none, north, east, south, west };
-        attr seen: bool;
-        attr fresh: bool;
+        class running;
+        class dropouts;
+        class policy: enum { naive, careful };
+        class mode: enum { idle, cleaning, docking, stopped };
+        class latched;
+        class attacking;
+        class heading: enum { none, north, east, south, west };
+        class seen;
+        class fresh;
         var fps: int = 4;
         var her_x: int;
         var her_y: int;
@@ -264,9 +270,9 @@ logfold_core::slots! {
         var ticks: int;
     }
     family cell((brunhilda::W * brunhilda::H)) {
-        attr cleaned: bool;
-        attr furniture: bool;
-        attr dock: bool;
+        class cleaned;
+        class furniture;
+        class dock;
     }
     inputs { run, pause, naive, careful, dropouts, faster, slower, start, dock, estop, north, east, south, west }
     consts { room_w: brunhilda::W, room_h: brunhilda::H, cell_px: 40 }
@@ -402,11 +408,13 @@ what draws the tick. So scrubbing the timeline unticks it, the
 same as everything else on the page.
 
 `family item { … }` with no count is unbounded. The first patch that
-names `item-N` makes the shim clone the template for every member up to
-N, in order. Members are never removed, so a row that is no longer
-present is hidden by CSS, and which item sits in which row is the
-projection's decision. A family with a count, like the studio's
-`cell(96)`, is pre-rendered instead.
+names `item-N` makes the shim create the template's markup for every
+member up to N, in order, as one HTML string. Members are never removed,
+so a row that is no longer present is hidden by CSS, and which item sits
+in which row is the projection's decision. A family with a count, like
+the studio's `cell(96)`, is pre-rendered instead. A list whose items are
+deleted or reordered wants a `keyed` family, in the next section; a
+delete for the todo list would go that way.
 
 ## Big lists: draw the family member by member
 
@@ -475,17 +483,25 @@ are never removed, only hidden.
 
 A bulk change (`clear`, replacing the whole vector) is logged as
 "everything", and the host rebuilds, which is right: everything did
-change. So does a shift over most of the family, because redrawing every
-member costs more than a diff. The rules are: the projection is still a
-pure function of state, `render` gives the whole page at any index, and
-the derived changes must agree with it. `derivative_law` checks that on
-a log, event by event; run it on a generated session the way
-`checkpoint_law` is run.
+change. So does a shift over most of a positional family, because
+redrawing every member costs more than a diff. A keyed family that
+empties is one instruction to the page. The rules are: the projection is
+still a pure function of state, `render` gives the whole page at any
+index, and the derived changes must agree with it. `derivative_law`
+checks that on a log, event by event; run it on a generated session the
+way `checkpoint_law` is run.
+
+Two things the framework does for a family on its own, so you never see
+them: a member's slots are written to the projection already in sorted
+order, learned from the first member, so a render never sorts; and slot
+names are interned, so a slot is twelve bytes and the ids are what cross
+the boundary.
 
 Measured on the benchmark table at 100,000 rows: select 91 → 2 ms, swap
-89 → 0.7 ms, update every tenth row 99 → 17 ms, and no derivative
-written by hand. `delta = f;` still exists for a component that wants to
-write one; the law checks it the same way.
+89 → 0.7 ms, update every tenth row 99 → 17 ms, with no derivative
+written by hand; a full render of the table, 28 ms natively. `delta = f;`
+still exists for a component that wants to write a derivative; the law
+checks it the same way.
 
 ## Testing without a browser
 
@@ -505,6 +521,13 @@ write one; the law checks it the same way.
   `crates/logfold-web/src/host.rs` drive a component through inputs,
   frames and scrubs and check a model DOM against the projection after
   every patch.
+- **Bench**: `www/bench.html` sweeps the benchmark table exponentially
+  and reports wasm, DOM and style per operation; `www/bench-vs.html` runs
+  the same operations against vanilla JS and React in one tab. Measure in
+  a foreground tab: a background tab runs ten times slower, wasm included.
+  The official js-framework-benchmark driver runs against the same
+  component through disposable glue; `docs/benchmark.md` has the numbers
+  and `docs/results/` the way to reproduce them.
 
 ## Rules that keep it simple
 
@@ -515,19 +538,46 @@ write one; the law checks it the same way.
 - Appearance is never generated. The generator writes registrations,
   constants, names and value tables.
 - Bounded structure is pre-rendered and toggled by numbers. Unbounded lists
-  grow from a template, one flat member per index, never removed. Nothing
-  diffs a tree.
+  grow from a template, one flat member each: by position, never removed,
+  or by key, with an order number and real removal. Nothing diffs a tree.
+- State goes in classes, numbers in attributes or variables. A class is
+  the cheapest thing a browser can match and invalidate; an attribute is
+  for a number the stylesheet reads with `attr()` or selects by value; a
+  variable is for `calc()`.
 - Time is the host's: the page owns the clock and calls `tick` or `frame`;
   the fold only ever sees ticks.
 - An effect is a value the fold desires; the host records it before
   performing it. Nothing about rendering is ever logged.
+- A benchmark never changes the framework. If a harness needs text nodes
+  or particular markup, it gets glue that lives beside the results and is
+  dropped afterwards; wins that rely on CSS stay, whether or not a harness
+  can see them.
+
+## Rules for a page with many rows
+
+Learned on the benchmark table, all of them the browser's doing:
+
+- A row's number is an attribute shown with `attr()`, never a CSS counter;
+  counters are sequential and one change restyles every later row.
+- Rows are grid rows with fixed columns, not an automatic-layout table,
+  which re-measures every cell when any cell changes.
+- `content-visibility: auto` on a row lets the browser skip style and
+  layout for rows off screen; with `contain-intrinsic-size` so scrolling
+  is stable.
+- Rows that leave should leave: a keyed family. A positional family only
+  hides them, and a page that has held 100,000 rows keeps 200,000 hidden
+  ones, which the style pass still visits.
 
 ## Where things are
 
 | | |
 |---|---|
-| `crates/logfold-core` | the runtime: log, events, folds, checkpoints, projection, expectations, `slots!`, `component!` |
+| `crates/logfold-core` | the runtime: log, events, folds, checkpoints, projection, `TrackedVec`, expectations, `slots!`, `component!` |
 | `crates/logfold-web` | the generic browser host, `export_component!`, `export_devtools!`, `export_raw!` |
 | `www/logfold.mjs`, `www/timeline.mjs`, `www/logfold-raw.mjs` | the shim, the devtools, the raw loader |
 | `examples/*` | the components; `examples/apps/*` their bundles, whose `build.rs` writes `www/gen/*`; `www/*.html` their pages |
+| `examples/bench`, `www/bench.html`, `www/bench-vs.html` | the benchmark table, its sweep, and the same operations against vanilla and React |
+| `scripts/build-www.sh`, `scripts/serve.py` | build every bundle; serve `www/` with no-cache headers |
+| `docs/architecture.md` | the map: what lives where, and every decision with its reason |
 | `docs/boundary.md` | why the boundary is shaped this way, with measurements |
+| `docs/benchmark.md`, `docs/results/` | the numbers, in-house and under the official driver, and how to reproduce them |

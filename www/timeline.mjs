@@ -29,15 +29,16 @@ export function timeline(host, container) {
   scrub.addEventListener("input", () => host.renderAt(Number(scrub.value)));
 
   function render() {
-    const app = host.app, n = app.len(), a = app.at();
+    const app = host.app, n = app.len(), a = app.at(), b = app.base?.() ?? 0;
+    scrub.min = b;                         // the horizon: the log forgot what came before
     scrub.max = n;
     scrub.value = a;                       // the slider shows what the DOM shows; nothing to guess
     at.textContent = a;
     const ck = app.checkpoint_for(a);
-    prov.textContent = ck < 0 ? `folded ${a} events from index 0` : `resumed from checkpoint at ${ck}, folded ${a - ck} more`;
+    prov.textContent = ck < 0 ? `folded ${a - b} events from index ${b}` : `resumed from checkpoint at ${ck}, folded ${a - ck} more`;
     vars.textContent = JSON.stringify(Object.fromEntries(host.vars));
     const spans = [];
-    for (let i = 0; i < n; i++) {
+    for (let i = b; i < n; i++) {
       const kind = app.kind(i), text = kind === "input" ? app.text?.(i) : undefined;
       const label = kind === "tick" ? `tick ${app.tick_ms(i).toFixed(0)}` : text !== undefined ? `input “${text}”` : kind;
       const cls = [kind === "input" ? "input" : "", i >= a ? "past" : "", app.checkpoint_for(i + 1) === i + 1 ? "ckpt" : ""].join(" ");

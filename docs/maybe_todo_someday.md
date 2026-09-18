@@ -54,8 +54,9 @@ milestone. Function names are used instead of line numbers; those drift.
 
 ## Riders: under ten lines each, pick up when the file is already open
 
-- `Checkpoints::truncate_before(n)`, the mirror of `truncate_after`, when
-  the flight-recorder window (proposal §4.9) needs it.
+- `Host.texts` keeps the text of every input before the horizon, deleted
+  todos included. Cap it, or drop entries no `text` slot at the head
+  points at, when a measurement says a page typed enough to matter.
 - A `Log::inputs()` round-trip test, so "seeds re-execution" is exercised
   rather than claimed. About thirty lines.
 - `Fold::done` and `LogView::last` have no callers outside core; delete

@@ -32,6 +32,7 @@ export async function rawApp(url) {
     render_at: (n) => patch(ex.lf_render_at(n)),
     at: () => ex.lf_at(),
     len: () => ex.lf_len(),
+    base: () => ex.lf_base(),
     checkpoint_for: (n) => ex.lf_checkpoint_for(n),
     kind: (i) => KINDS[ex.lf_kind(i)],
     tick_ms: (i) => ex.lf_tick_ms(i),

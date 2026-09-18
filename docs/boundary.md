@@ -706,6 +706,35 @@ behind a trait object, so a component without a family compiles none of
 them; what every bundle carries is the head state, `apply` with its
 in-place path, tombstones and the derivative call.
 
+### Four more, after the official run
+
+The official driver's split showed where the remaining script time was,
+and four changes followed, none of them for the benchmark's sake:
+
+- **Slot names are interned.** A `Slot` carried two `&'static str`s and
+  was 48 bytes; it now carries two-byte ids and is 12, so a projection's
+  store is a quarter of the size, comparisons are integer compares, and
+  the ids are what cross the boundary, with no name table in the host.
+  Declarations cache their ids in their own statics after the first use;
+  the shim asks the app for the name behind an id once and caches it.
+- **A family's writes go in sorted.** The first member shows the order its
+  slots sort in; every member after it that writes the same slots is
+  emitted through that permutation, so the batch arrives sorted and the
+  projection's sort is a linear check. A 100,000-row render went from 38
+  to 16 ms natively.
+- **Drop-all.** A keyed family that empties is one instruction on the
+  wire, and one `replaceChildren` on the page, instead of a clear per
+  member. Clear at 1,000 rows under the official driver: 19.1 → 15.0 ms,
+  against vanilla's 14.5.
+- **An Fx hasher** for the keyed derivative's key maps, in place of
+  SipHash.
+
+Natively, creating 100,000 rows went from 68 ms to 28. Under the
+official driver, every CPU benchmark moved by one to four milliseconds
+in the right direction; the table in `docs/benchmark.md` has both runs.
+Memory did not move at 1,000 rows, where the projection was never the
+bulk of the heap.
+
 ## What is in a bundle
 
 Measured with twiggy on a named build of the like app (code bytes before

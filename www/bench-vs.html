@@ -58,12 +58,13 @@
     return `${ADJ[next() % ADJ.length]} ${COL[next() % COL.length]} ${NOUN[next() % NOUN.length]}`;
   };
 
-  // ---- LogFold ----
+  // ---- LogFold ---- (rows are keyed by id: an input carries the id of the row at a position)
+  const keyAt = (p) => Number(document.querySelectorAll("#lf tr[data-fold]")[p]?.dataset.fold.slice(4) ?? -1);
   const host = mount(new BenchApp(), { root: document.getElementById("lf").parentElement, manifest });
   const logfold = {
     create: (n) => host.dispatch("create", String(n)), append: (n) => host.dispatch("append", String(n)),
-    update: () => host.dispatch("update"), select: (n) => host.dispatch("select", "", Math.min(5, n - 1)),
-    swap: () => host.dispatch("swap"), remove: (n) => host.dispatch("remove", "", Math.min(3, n - 1)), clear: () => host.dispatch("clear"),
+    update: () => host.dispatch("update"), select: (n) => host.dispatch("select", "", keyAt(Math.min(5, n - 1))),
+    swap: () => host.dispatch("swap"), remove: (n) => host.dispatch("remove", "", keyAt(Math.min(3, n - 1))), clear: () => host.dispatch("clear"),
     split: () => [host.stats.wasm, host.stats.apply],
   };
 

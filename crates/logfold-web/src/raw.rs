@@ -228,7 +228,12 @@ mod tests {
         let mut r = Raw::new(like_local::component());
         assert_eq!(r.input_count(), 1);
         assert_eq!(r.input_name(0), Some("toggle"));
-        assert_eq!(r.name(0), Some("root"), "the manifest's names come first");
+        // every manifest name is interned and reachable by id (ids are
+        // process-wide, so their order is the manifest's only for the first
+        // component in a process; the shim asks the app, so it need not be)
+        for n in like_local::ui::MANIFEST.names() {
+            assert!((0..256).any(|i| r.name(i) == Some(n)), "{n} not interned");
+        }
         let n = r.dispatch(0, -1, 0);
         assert_eq!(n, 5, "one slot changed: five numbers");
         let patch = unsafe { std::slice::from_raw_parts(r.patch_ptr(), n as usize) };

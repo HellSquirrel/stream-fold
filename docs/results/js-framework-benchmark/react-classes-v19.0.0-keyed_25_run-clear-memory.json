@@ -1,0 +1,1 @@
+{"framework":"react-classes-v19.0.0-keyed","keyed":true,"benchmark":"25_run-clear-memory","type":"memory","values":{"DEFAULT":{"min":1.969416618347168,"max":1.969416618347168,"median":1.969416618347168,"mean":1.969416618347168,"stddev":null,"values":[1.969416618347168]}}}

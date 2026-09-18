@@ -25,10 +25,13 @@ logfold_core::component! {
         create: text => Create,
         append: text => Append,
         update => Update,
-        select: index => Select,
+        select: index => Select,   // the row's key: its id
         swap => Swap,
-        remove: index => Remove,
+        remove: index => Remove,   // likewise
         clear => Clear,
+        run => Run,
+        runlots => RunLots,
+        add => Add,
     }
     root { var count: int; }
     family row keyed {
@@ -40,7 +43,7 @@ logfold_core::component! {
         class colour: enum { red, yellow, blue, green, pink, brown, purple, tan, white, black, orange };
         class noun: enum { table, chair, house, bbq, desk, car, pony, cookie, sandwich, burger, pizza, mouse, keyboard };
     }
-    state State;
+    state State = State { next_id: 1, ..State::default() };   // ids from 1, as the reference does
     step = step;
     project = project;
     project row from rows = project_row, key = row_key, context = selection, affects = affects;
@@ -120,12 +123,27 @@ pub fn step(mut s: State, at: u64, ev: &Ev) -> State {
             s.extend(count(n), at);
         }
         Input::Append(n) => s.extend(count(n), at),
+        // the reference benchmark's fixed-size buttons
+        Input::Run | Input::RunLots => {
+            s.rows.clear();
+            s.selected = None;
+            s.extend(
+                if matches!(input, Input::Run) {
+                    1000
+                } else {
+                    10_000
+                },
+                at,
+            );
+        }
+        Input::Add => s.extend(1000, at),
         Input::Update => {
             for r in s.rows.iter_mut().step_by(10) {
                 r.bangs += 1;
             }
         }
-        Input::Select(p) => s.selected = s.rows.get(*p as usize).map(|r| r.id),
+        // rows are keyed by id, so a click inside a row carries the id
+        Input::Select(id) => s.selected = s.rows.iter().find(|r| r.id == *id).map(|r| r.id),
         Input::Swap => {
             // the reference swaps rows 1 and 998; on a shorter table, 1 and the second to last
             let len = s.rows.len();
@@ -133,9 +151,9 @@ pub fn step(mut s: State, at: u64, ev: &Ev) -> State {
                 s.rows.swap(1, (len - 2).min(998));
             }
         }
-        Input::Remove(p) => {
-            if (*p as usize) < s.rows.len() {
-                s.rows.remove(*p as usize);
+        Input::Remove(id) => {
+            if let Some(p) = s.rows.iter().position(|r| r.id == *id) {
+                s.rows.remove(p);
             }
         }
         Input::Clear => {
@@ -216,7 +234,7 @@ mod tests {
         let b = run(vec![text("create", "1000")]);
         assert_eq!(a.rows.len(), 1000);
         assert_eq!(a, b, "same log, same table");
-        assert_eq!(a.rows[7].id, 7);
+        assert_eq!(a.rows[7].id, 8, "ids from 1");
         assert!(a.rows.iter().all(|r| (r.adj as u32) < ADJECTIVES
             && (r.colour as u32) < COLOURS
             && (r.noun as u32) < NOUNS));
@@ -241,11 +259,11 @@ mod tests {
         );
 
         let s = run(vec![text("create", "1000"), plain("swap")]);
-        assert_eq!((s.rows[1].id, s.rows[998].id), (998, 1));
+        assert_eq!((s.rows[1].id, s.rows[998].id), (999, 2));
         let s = run(vec![text("create", "10"), plain("swap")]);
         assert_eq!(
             (s.rows[1].id, s.rows[8].id),
-            (8, 1),
+            (9, 2),
             "short table: 1 and second to last"
         );
 
@@ -255,7 +273,7 @@ mod tests {
             at("remove", 3),
         ]);
         assert_eq!(s.rows.len(), 999);
-        assert_eq!(s.rows[3].id, 4, "rows shift up");
+        assert_eq!(s.rows[3].id, 5, "id 3 gone, rows shift up");
         assert_eq!(
             s.selected,
             Some(5),
@@ -269,16 +287,16 @@ mod tests {
         );
         assert_eq!(p.get(ui::row::present.at(3)), None, "row 3 is gone");
         assert_eq!(
-            p.get(logfold_core::Slot::order(logfold_core::Target::Indexed(
+            p.get(logfold_core::Slot::order(logfold_core::Target::indexed(
                 "row", 5
             ))),
-            Some(4.0),
-            "id 5 now sits at position 4"
+            Some(3.0),
+            "id 5 now sits at position 3"
         );
 
         let s = run(vec![text("create", "1000"), text("append", "1000")]);
         assert_eq!(s.rows.len(), 2000);
-        assert_eq!(s.rows[1999].id, 1999);
+        assert_eq!(s.rows[1999].id, 2000);
 
         let s = run(vec![
             text("create", "1000"),
@@ -288,7 +306,7 @@ mod tests {
         assert_eq!(
             s,
             State {
-                next_id: 1000,
+                next_id: 1001,
                 ..State::default()
             }
         );
@@ -351,8 +369,8 @@ mod tests {
         );
         assert_eq!(
             step(&mut s, at("remove", 90)),
-            Some(1 + 6 + 9 + 1),
-            "one gone (order, six slots), nine shifted, the count"
+            Some(1 + 6 + 10 + 1),
+            "id 90 gone (order, six slots), the ten after it shifted, the count"
         );
         assert_eq!(step(&mut s, Ev::tick(1)), Some(0), "a tick changes nothing");
         assert_eq!(

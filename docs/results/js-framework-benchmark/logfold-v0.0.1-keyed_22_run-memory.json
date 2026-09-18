@@ -1,0 +1,1 @@
+{"framework":"logfold-v0.0.1-keyed","keyed":true,"benchmark":"22_run-memory","type":"memory","values":{"DEFAULT":{"min":4.035802841186523,"max":4.035802841186523,"median":4.035802841186523,"mean":4.035802841186523,"stddev":null,"values":[4.035802841186523]}}}

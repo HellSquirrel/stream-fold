@@ -28,6 +28,50 @@ use std::cmp::Ordering;
 /// A target or variable name. Static: names are part of the skeleton.
 pub type Name = &'static str;
 
+/// A name, interned: two bytes that stand for one `&'static str`. Slots
+/// carry these instead of strings, so a slot is twelve bytes and compares
+/// as integers, and the ids are what cross the boundary as-is.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct NameId(pub u16);
+
+/// One table for the process: declarations cache their ids in statics,
+/// so the table they index must be the same everywhere.
+static NAMES: std::sync::Mutex<Vec<Name>> = std::sync::Mutex::new(Vec::new());
+
+/// The id for a name, the same id every time. Pointer-equal strings, the
+/// usual case for names from a declaration, are found before any byte is
+/// compared. A host interns its manifest's names first so that ids match
+/// the manifest's order.
+pub fn intern(name: Name) -> NameId {
+    let mut names = NAMES.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(i) = names
+        .iter()
+        .position(|n| std::ptr::eq(*n, name) || *n == name)
+    {
+        return NameId(i as u16);
+    }
+    names.push(name);
+    NameId((names.len() - 1) as u16)
+}
+
+/// The name behind an id.
+pub fn name_of(id: NameId) -> Option<Name> {
+    NAMES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(id.0 as usize)
+        .copied()
+}
+
+impl std::fmt::Debug for NameId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match name_of(*self) {
+            Some(n) => write!(f, "{n:?}"),
+            None => write!(f, "#{}", self.0),
+        }
+    }
+}
+
 /// How a number lands on a target.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SlotKind {
@@ -51,43 +95,26 @@ pub enum SlotKind {
 
 /// Where a slot lives: the document root, an element the skeleton named
 /// with `data-fold="name"`, or member `i` of a family named `name-i`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Root sorts first, then named targets, then families by member.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Target {
     Root,
-    Named(Name),
-    Indexed(Name, u32),
+    Named(NameId),
+    Indexed(NameId, u32),
 }
 
-/// Names are `&'static str`, almost always the very same string from the
-/// declaration, so equal pointers settle a comparison before any byte is
-/// read. Same order as a byte comparison, since equal pointers mean equal
-/// bytes.
-#[inline]
-fn name_cmp(a: Name, b: Name) -> Ordering {
-    if std::ptr::eq(a, b) {
-        Ordering::Equal
-    } else {
-        a.cmp(b)
+/// As the index of an `Order` clear: every member of the family is gone.
+/// A host emits it in place of one clear per member when a keyed family
+/// empties, and the page drops them all at once.
+pub const ALL: u32 = u32::MAX;
+
+impl Target {
+    pub fn named(name: Name) -> Self {
+        Target::Named(intern(name))
     }
-}
 
-impl Ord for Target {
-    fn cmp(&self, other: &Self) -> Ordering {
-        match (self, other) {
-            (Target::Root, Target::Root) => Ordering::Equal,
-            (Target::Root, _) => Ordering::Less,
-            (_, Target::Root) => Ordering::Greater,
-            (Target::Named(a), Target::Named(b)) => name_cmp(a, b),
-            (Target::Named(_), Target::Indexed(..)) => Ordering::Less,
-            (Target::Indexed(..), Target::Named(_)) => Ordering::Greater,
-            (Target::Indexed(a, i), Target::Indexed(b, j)) => name_cmp(a, b).then(i.cmp(j)),
-        }
-    }
-}
-
-impl PartialOrd for Target {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
+    pub fn indexed(name: Name, i: u32) -> Self {
+        Target::Indexed(intern(name), i)
     }
 }
 
@@ -96,73 +123,74 @@ impl From<&'static str> for Target {
         if name == "root" {
             Target::Root
         } else {
-            Target::Named(name)
+            Target::named(name)
         }
     }
 }
 
 /// One variable or attribute on one target, e.g. `(Root, Var, "--liked")`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Twelve bytes; ordered by target, then kind, then name id.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Slot {
     pub target: Target,
     pub kind: SlotKind,
-    pub name: Name,
+    pub name: NameId,
 }
 
-impl Ord for Slot {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.target
-            .cmp(&other.target)
-            .then(self.kind.cmp(&other.kind))
-            .then_with(|| name_cmp(self.name, other.name))
-    }
-}
-
-impl PartialOrd for Slot {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
+impl std::fmt::Debug for Slot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Slot({:?}, {:?}, {:?})",
+            self.target, self.kind, self.name
+        )
     }
 }
 
 impl Slot {
-    pub const fn var(target: Target, name: Name) -> Self {
+    /// The name as a string.
+    pub fn name(&self) -> Name {
+        name_of(self.name).unwrap_or("?")
+    }
+
+    pub fn var(target: Target, name: Name) -> Self {
         Self {
             target,
             kind: SlotKind::Var,
-            name,
+            name: intern(name),
         }
     }
 
-    pub const fn attr(target: Target, name: Name) -> Self {
+    pub fn attr(target: Target, name: Name) -> Self {
         Self {
             target,
             kind: SlotKind::Attr,
-            name,
+            name: intern(name),
         }
     }
 
-    pub const fn text(target: Target, name: Name) -> Self {
+    pub fn text(target: Target, name: Name) -> Self {
         Self {
             target,
             kind: SlotKind::Text,
-            name,
+            name: intern(name),
         }
     }
 
-    pub const fn class(target: Target, name: Name) -> Self {
+    pub fn class(target: Target, name: Name) -> Self {
         Self {
             target,
             kind: SlotKind::Class,
-            name,
+            name: intern(name),
         }
     }
 
     /// The position of a keyed family member; see [`SlotKind::Order`].
-    pub const fn order(target: Target) -> Self {
+    pub fn order(target: Target) -> Self {
         Self {
             target,
             kind: SlotKind::Order,
-            name: "order",
+            name: intern("order"),
         }
     }
 
@@ -482,15 +510,19 @@ mod tests {
         let a = p(&[("--x", 1.0), ("--y", 2.0), ("--gone", 3.0)]);
         let b = p(&[("--x", 1.0), ("--y", 5.0), ("--new", 4.0)]);
         let d = diff(&a, &b);
-        // one merge walk: changes come out in slot order
-        assert_eq!(
-            d,
-            vec![
-                Change::Clear(Slot::var(Target::Root, "--gone")),
-                Change::Set(Slot::var(Target::Root, "--new"), 4.0),
-                Change::Set(Slot::var(Target::Root, "--y"), 5.0),
-            ]
-        );
+        // one merge walk over slot order (interning order): the same three changes, whatever the order
+        let mut got: Vec<String> = d.iter().map(|c| format!("{c:?}")).collect();
+        let mut want: Vec<String> = [
+            Change::Clear(Slot::var(Target::Root, "--gone")),
+            Change::Set(Slot::var(Target::Root, "--new"), 4.0),
+            Change::Set(Slot::var(Target::Root, "--y"), 5.0),
+        ]
+        .iter()
+        .map(|c| format!("{c:?}"))
+        .collect();
+        got.sort();
+        want.sort();
+        assert_eq!(got, want);
         assert!(diff(&a, &a).is_empty());
     }
 

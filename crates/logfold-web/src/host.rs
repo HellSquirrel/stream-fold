@@ -17,8 +17,8 @@
 use std::collections::BTreeSet;
 
 use logfold_core::{
-    Change, Checkpoints, Component, Domain, Event, Fold, Log, Name, Projection, SlotKind, Target,
-    apply, diff, diff_effects, in_flight,
+    ALL, Change, Checkpoints, Component, Domain, Event, Fold, Log, Name, NameId, Projection, Slot,
+    SlotKind, Target, apply, diff, diff_effects, in_flight, intern, name_of,
 };
 #[cfg(feature = "bindgen")]
 use wasm_bindgen::JsValue;
@@ -55,25 +55,6 @@ impl Kind {
     }
 }
 
-/// Names crossing the boundary become small integers; the shim fetches
-/// each name once and caches the handle.
-#[derive(Default)]
-struct Names(Vec<Name>);
-
-impl Names {
-    fn id(&mut self, name: Name) -> f64 {
-        let i = self.0.iter().position(|n| *n == name).unwrap_or_else(|| {
-            self.0.push(name);
-            self.0.len() - 1
-        });
-        i as f64
-    }
-
-    fn name(&self, id: u32) -> Option<Name> {
-        self.0.get(id as usize).copied()
-    }
-}
-
 pub struct Host<D: Domain, X: Clone + 'static> {
     component: Component<D, X>,
     state: Fold<Event<D>, HostState<D, X>>,
@@ -90,7 +71,6 @@ pub struct Host<D: Domain, X: Clone + 'static> {
     current: Projection,
     /// Virtual time, advanced by `frame`.
     clock: u64,
-    names: Names,
     #[cfg(feature = "bindgen")]
     labels: [JsValue; 5],
 }
@@ -102,9 +82,9 @@ impl<D: Domain, X: Clone + 'static> Host<D, X> {
             let c = component.clone();
             state.clone().map(move |(x, _)| c.render(x))
         };
-        // A declared contract fixes the ids: the generated page resolves
-        // them from the manifest without asking.
-        let mut names = Names::default();
+        // A declared contract fixes the ids: the manifest's names are
+        // interned first, in its order, so the generated page resolves ids
+        // without asking. Names crossing the boundary are the interned ids.
         if let Some(m) = component.manifest {
             let declared: Vec<Name> = component.input_names().collect();
             assert!(
@@ -112,7 +92,7 @@ impl<D: Domain, X: Clone + 'static> Host<D, X> {
                 "the component's inputs must match its manifest, in order"
             );
             for n in m.names() {
-                names.id(n);
+                intern(n);
             }
         }
         let head = Some(state.state(Log::new().view()));
@@ -126,7 +106,6 @@ impl<D: Domain, X: Clone + 'static> Host<D, X> {
             at: 0,
             current: Projection::new(),
             clock: 0,
-            names,
             #[cfg(feature = "bindgen")]
             labels: [
                 label("input"),
@@ -149,12 +128,12 @@ impl<D: Domain, X: Clone + 'static> Host<D, X> {
     /// The name behind a target or variable id in a patch.
     #[cfg(feature = "bindgen")]
     pub fn name(&self, id: u32) -> JsValue {
-        self.names.name(id).map_or(JsValue::UNDEFINED, label)
+        name_of(NameId(id as u16)).map_or(JsValue::UNDEFINED, label)
     }
 
     /// The name behind an id, as bytes in linear memory. For raw hosts.
     pub fn name_str(&self, id: u32) -> Option<Name> {
-        self.names.name(id)
+        name_of(NameId(id as u16))
     }
 
     /// The component's inputs, by name, in dispatch order.
@@ -246,7 +225,21 @@ impl<D: Domain, X: Clone + 'static> Host<D, X> {
             self.checkpoints
                 .output_at(&self.project, self.log.view(), n)
         };
-        let changes = diff(&self.current, &target);
+        let mut changes = diff(&self.current, &target);
+        // a keyed family that emptied: one "all gone" instead of a clear per member
+        for f in &self.component.families {
+            let fam = f.name_id();
+            let of_family = |s: &Slot| matches!(s.target, Target::Indexed(n, _) if n == fam);
+            if f.keyed()
+                && changes
+                    .iter()
+                    .any(|c| matches!(c, Change::Clear(s) if of_family(s)))
+                && !target.iter().any(|(s, _)| of_family(&s))
+            {
+                changes.retain(|c| !of_family(&c.slot()));
+                changes.push(Change::Clear(Slot::order(Target::Indexed(fam, ALL))));
+            }
+        }
         self.current = target;
         self.at = n;
         self.encode(&changes)
@@ -368,11 +361,11 @@ impl<D: Domain, X: Clone + 'static> Host<D, X> {
                 _ => {}
             }
             let (target, index) = match slot.target {
-                Target::Root => ("root", -1.0),
+                Target::Root => (intern("root"), -1.0),
                 Target::Named(n) => (n, -1.0),
-                Target::Indexed(n, i) => (n, f64::from(i)),
+                Target::Indexed(n, i) => (n, if i == ALL { -1.0 } else { f64::from(i) }),
             };
-            out.push(self.names.id(target));
+            out.push(f64::from(target.0));
             out.push(index);
             out.push(match slot.kind {
                 SlotKind::Var => 0.0,
@@ -381,7 +374,7 @@ impl<D: Domain, X: Clone + 'static> Host<D, X> {
                 SlotKind::Class => 3.0,
                 SlotKind::Order => 4.0,
             });
-            out.push(self.names.id(slot.name));
+            out.push(f64::from(slot.name.0));
             out.push(match c {
                 Change::Set(_, v) => *v,
                 Change::Clear(_) => f64::NAN,
@@ -476,20 +469,21 @@ mod tests {
 
     /// Decode a patch back into changes, using the host's own name table.
     pub(super) fn decode<D: Domain, X: Clone + 'static>(
-        h: &Host<D, X>,
+        _h: &Host<D, X>,
         patch: &[f64],
     ) -> Vec<Change> {
         patch
             .chunks(5)
             .map(|c| {
                 let (tname, name) = (
-                    h.names.name(c[0] as u32).unwrap(),
-                    h.names.name(c[3] as u32).unwrap(),
+                    name_of(NameId(c[0] as u16)).unwrap(),
+                    name_of(NameId(c[3] as u16)).unwrap(),
                 );
                 let target = match (tname, c[1]) {
                     ("root", _) => Target::Root,
-                    (n, i) if i >= 0.0 => Target::Indexed(n, i as u32),
-                    (n, _) => Target::Named(n),
+                    (n, i) if i >= 0.0 => Target::indexed(n, i as u32),
+                    (n, _) if c[2] == 4.0 => Target::indexed(n, ALL),
+                    (n, _) => Target::named(n),
                 };
                 let slot = match c[2] as u8 {
                     0 => Slot::var(target, name),
@@ -769,7 +763,10 @@ mod delta_tests {
                 {
                     let gone: Vec<_> = dom
                         .iter()
-                        .filter(|(x, _)| x.target == s.target)
+                        .filter(|(x, _)| match (x.target, s.target) {
+                            (Target::Indexed(a, _), Target::Indexed(b, ALL)) => a == b,
+                            (a, b) => a == b,
+                        })
                         .map(|(x, _)| x)
                         .collect();
                     for x in gone {
@@ -818,8 +815,8 @@ mod delta_tests {
         let p = h.dispatch(remove, 90, b"");
         assert_eq!(
             step(&mut h, p),
-            1 + 9 + 1,
-            "one drop, nine order numbers, the count"
+            1 + 10 + 1,
+            "one drop, ten order numbers, the count"
         );
         let p = h.dispatch(append, -1, b"5");
         step(&mut h, p);

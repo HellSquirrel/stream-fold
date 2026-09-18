@@ -73,12 +73,14 @@
   const ops = (n) => [
     ["create", () => host.dispatch("create", String(n))],
     ["update", () => host.dispatch("update")],
-    ["select", () => host.dispatch("select", "", Math.min(5, n - 1))],
+    ["select", () => host.dispatch("select", "", keyAt(Math.min(5, n - 1)))],
     ["swap", () => host.dispatch("swap")],
-    ["remove", () => host.dispatch("remove", "", Math.min(3, n - 1))],
+    ["remove", () => host.dispatch("remove", "", keyAt(Math.min(3, n - 1)))],
     ["append", () => host.dispatch("append", String(n))],
     ["clear", () => host.dispatch("clear")],
   ];
+  // rows are keyed by id: the input carries the id of the row at that position
+  const keyAt = (p) => Number(document.querySelectorAll("#rows tr[data-fold]")[p]?.dataset.fold.slice(4) ?? -1);
   const yieldToBrowser = () => new Promise((r) => setTimeout(r, 0));
   async function scale(n) {
     const out = [];

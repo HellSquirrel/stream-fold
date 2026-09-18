@@ -1,7 +1,7 @@
 // generated from the component's slots!; do not edit
 export default {
   names: ["root", "row", "--count", "present", "selected", "data-id", "data-bangs", "adj", "colour", "noun", "order"],
-  inputs: ["create", "append", "update", "select", "swap", "remove", "clear"],
+  inputs: ["create", "append", "update", "select", "swap", "remove", "clear", "run", "runlots", "add"],
   consts: { },
   families: { "row": "keyed", },
   slots: {

@@ -26,11 +26,12 @@
 // child, or the target itself.
 
 export function mount(app, { root = document, manifest = null } = {}) {
-  // Names: from the manifest when the component declared one (ids are fixed
-  // by declaration order), else asked once per id and cached as a handle.
+  // Names: asked of the app once per id and cached as a handle; the
+  // manifest's list is the fallback for an app without `name`. Ids are
+  // interned in Rust, so the app is the authority on what they mean.
   const names = new Map();
   const name = (id) => {
-    if (!names.has(id)) names.set(id, manifest ? manifest.names[id] : app.name(id));
+    if (!names.has(id)) names.set(id, app.name?.(id) ?? manifest?.names[id]);
     return names.get(id);
   };
   // Targets are indexed once: every `data-fold` on the page, plus members
@@ -137,21 +138,30 @@ export function mount(app, { root = document, manifest = null } = {}) {
     if (!f.keyed) f.count += rows.length;
   };
   // Keyed members: drop the gone, then place each by its order number,
-  // lowest first, so every member before a placed one is already final.
+  // lowest first. A member already at its place costs one comparison (a
+  // removal shifts the rest into place by itself). One pulled forward from
+  // earlier in the list would shift its reference, so it goes after it.
+  // A final check falls back to detaching every mover and reinserting in
+  // order, which is always right.
   const settleOrder = (f) => {
     for (const k of f.drops) { f.members.get(k)?.remove(); f.members.delete(k); }
     f.drops.length = 0;
-    if (f.moves.length) {
-      f.moves.sort((a, b) => a[0] - b[0]);
-      const base = Array.prototype.indexOf.call(f.parent.children, f.tpl) + 1;
-      for (const [p, k] of f.moves) {
-        const el = f.members.get(k);
-        if (!el) continue;
-        const ref = f.parent.children[base + p] ?? null;
-        if (ref !== el) f.parent.insertBefore(el, ref);
-      }
-      f.moves.length = 0;
+    if (!f.moves.length) return;
+    f.moves.sort((a, b) => a[0] - b[0]);
+    const parent = f.parent, base = Array.prototype.indexOf.call(parent.children, f.tpl) + 1;
+    const at = (p) => parent.children[base + p] ?? null;
+    for (const [p, k] of f.moves) {
+      const el = f.members.get(k), ref = at(p);
+      if (!el || ref === el) continue;
+      if (ref && el.compareDocumentPosition(ref) & Node.DOCUMENT_POSITION_FOLLOWING) parent.insertBefore(el, ref.nextSibling);
+      else parent.insertBefore(el, ref);
     }
+    if (f.moves.some(([p, k]) => at(p) !== f.members.get(k))) {
+      const movers = f.moves.map(([p, k]) => [p, f.members.get(k)]).filter(([, el]) => el);
+      for (const [, el] of movers) el.remove();
+      for (const [p, el] of movers) parent.insertBefore(el, at(p));
+    }
+    f.moves.length = 0;
   };
 
   const vars = new Map();          // what the DOM holds, mirrored for devtools
@@ -183,6 +193,11 @@ export function mount(app, { root = document, manifest = null } = {}) {
       let lastId = -1, lastIndex = -1, lastFam = null, lastF = null, lastRow = null;   // a member's writes are consecutive
       for (let i = 0; i < patch.length; i += 5) {
         const id = patch[i], index = patch[i + 1], kind = patch[i + 2], nameId = patch[i + 3], x = patch[i + 4];
+        if (kind === 4 && index < 0) {                             // every member of a keyed family is gone
+          const f = familyOf(name(id));
+          if (f) { const keep = []; for (const c of f.parent.children) { keep.push(c); if (c === f.tpl) break; } f.parent.replaceChildren(...keep); f.members.clear(); }
+          continue;
+        }
         if (index >= 0) {
           if (id !== lastId) { lastId = id; lastFam = name(id); lastF = familyOf(lastFam); lastIndex = -1; }
           const fam = lastFam, f = lastF;

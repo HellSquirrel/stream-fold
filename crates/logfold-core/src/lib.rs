@@ -22,6 +22,8 @@ pub use event::{Action, Domain, Event, Index, IoResult, Key, Never, Origin, ReqI
 pub use expect::{Breach, Expectation, Mode, check_all_prefixes, guard};
 pub use fold::{Checkpoints, Fold, checkpoint_law, in_flight, now};
 pub use log::{Log, LogView};
-pub use project::{Change, Name, Projection, Slot, SlotKind, Target, apply, diff};
+pub use project::{
+    ALL, Change, Name, NameId, Projection, Slot, SlotKind, Target, apply, diff, intern, name_of,
+};
 pub use slots::{Declared, Manifest, SlotDecl, SlotType, TargetDecl};
 pub use tracked::{Changes, TrackedVec};

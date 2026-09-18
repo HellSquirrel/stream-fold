@@ -33,7 +33,9 @@
 
 use std::fmt::Write as _;
 
-use crate::project::{Name, SlotKind};
+use std::sync::atomic::{AtomicU16, Ordering};
+
+use crate::project::{Name, NameId, SlotKind, intern};
 
 /// What a slot's number means, so the shim can spell it for CSS.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -242,7 +244,8 @@ macro_rules! slots {
             use $crate::project::SlotKind;
             use $crate::slots::{Declared, Manifest, SlotDecl, SlotType, TargetDecl};
 
-            $crate::slots!(@consts (TargetDecl::Root) $($($root)*)?);
+            static ROOT_ID: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
+            $crate::slots!(@consts (TargetDecl::Root, &ROOT_ID) $($($root)*)?);
             $crate::slots!(@decls ROOT_DECLS [] (TargetDecl::Root) $($($root)*)?);
             $(
                 pub mod $fam {
@@ -255,7 +258,8 @@ macro_rules! slots {
                     /// Members addressed by key, not position.
                     pub const KEYED: bool = $crate::slots!(@keyed $($keyed)?);
                     const TARGET: TargetDecl = TargetDecl::Family { name: stringify!($fam), count: COUNT, keyed: KEYED };
-                    $crate::slots!(@consts (TARGET) $($famslots)*);
+                    static TARGET_ID: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
+                    $crate::slots!(@consts (TARGET, &TARGET_ID) $($famslots)*);
                     $crate::slots!(@decls DECLS [] (TARGET) $($famslots)*);
                 }
             )*
@@ -277,32 +281,32 @@ macro_rules! slots {
     (@keyed keyed) => { true };
 
     // ---- one `Declared` constant per slot, plus a module of values per enum ----
-    (@consts ($t:expr) class $n:ident; $($rest:tt)*) => {
-        pub const $n: Declared = Declared { target: $t, kind: SlotKind::Class, name: stringify!($n) };
-        $crate::slots!(@consts ($t) $($rest)*);
+    (@consts ($t:expr, $tid:expr) class $n:ident; $($rest:tt)*) => {
+        pub const $n: Declared = Declared { target: $t, kind: SlotKind::Class, name: stringify!($n), id: { static ID: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0); &ID }, target_id: $tid };
+        $crate::slots!(@consts ($t, $tid) $($rest)*);
     };
-    (@consts ($t:expr) class $n:ident : enum { $($v:ident),* $(,)? }; $($rest:tt)*) => {
-        pub const $n: Declared = Declared { target: $t, kind: SlotKind::Class, name: stringify!($n) };
+    (@consts ($t:expr, $tid:expr) class $n:ident : enum { $($v:ident),* $(,)? }; $($rest:tt)*) => {
+        pub const $n: Declared = Declared { target: $t, kind: SlotKind::Class, name: stringify!($n), id: { static ID: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0); &ID }, target_id: $tid };
         $crate::enum_values!($n { $($v),* });
-        $crate::slots!(@consts ($t) $($rest)*);
+        $crate::slots!(@consts ($t, $tid) $($rest)*);
     };
-    (@consts ($t:expr) attr $n:ident : int $(= $init:expr)?; $($rest:tt)*) => {
-        pub const $n: Declared = Declared { target: $t, kind: SlotKind::Attr, name: concat!("data-", stringify!($n)) };
-        $crate::slots!(@consts ($t) $($rest)*);
+    (@consts ($t:expr, $tid:expr) attr $n:ident : int $(= $init:expr)?; $($rest:tt)*) => {
+        pub const $n: Declared = Declared { target: $t, kind: SlotKind::Attr, name: concat!("data-", stringify!($n)), id: { static ID: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0); &ID }, target_id: $tid };
+        $crate::slots!(@consts ($t, $tid) $($rest)*);
     };
-    (@consts ($t:expr) var $n:ident : int $(= $init:expr)?; $($rest:tt)*) => {
-        pub const $n: Declared = Declared { target: $t, kind: SlotKind::Var, name: concat!("--", stringify!($n)) };
-        $crate::slots!(@consts ($t) $($rest)*);
+    (@consts ($t:expr, $tid:expr) var $n:ident : int $(= $init:expr)?; $($rest:tt)*) => {
+        pub const $n: Declared = Declared { target: $t, kind: SlotKind::Var, name: concat!("--", stringify!($n)), id: { static ID: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0); &ID }, target_id: $tid };
+        $crate::slots!(@consts ($t, $tid) $($rest)*);
     };
-    (@consts ($t:expr) var $n:ident : num $(= $init:expr)?; $($rest:tt)*) => {
-        pub const $n: Declared = Declared { target: $t, kind: SlotKind::Var, name: concat!("--", stringify!($n)) };
-        $crate::slots!(@consts ($t) $($rest)*);
+    (@consts ($t:expr, $tid:expr) var $n:ident : num $(= $init:expr)?; $($rest:tt)*) => {
+        pub const $n: Declared = Declared { target: $t, kind: SlotKind::Var, name: concat!("--", stringify!($n)), id: { static ID: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0); &ID }, target_id: $tid };
+        $crate::slots!(@consts ($t, $tid) $($rest)*);
     };
-    (@consts ($t:expr) text $n:ident; $($rest:tt)*) => {
-        pub const $n: Declared = Declared { target: $t, kind: SlotKind::Text, name: stringify!($n) };
-        $crate::slots!(@consts ($t) $($rest)*);
+    (@consts ($t:expr, $tid:expr) text $n:ident; $($rest:tt)*) => {
+        pub const $n: Declared = Declared { target: $t, kind: SlotKind::Text, name: stringify!($n), id: { static ID: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0); &ID }, target_id: $tid };
+        $crate::slots!(@consts ($t, $tid) $($rest)*);
     };
-    (@consts ($t:expr)) => {};
+    (@consts ($t:expr, $tid:expr)) => {};
 
     // ---- the manifest group: a tt-muncher accumulating one array ----
     (@decls $name:ident [$($acc:tt)*] ($t:expr) class $n:ident; $($rest:tt)*) => {
@@ -348,35 +352,68 @@ macro_rules! enum_values {
 
 /// A declared slot: a [`Slot`](crate::project::Slot) for the root or a
 /// named target, or a family that becomes a slot with [`Declared::at`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy)]
 pub struct Declared {
     pub target: TargetDecl,
     pub kind: SlotKind,
     pub name: Name,
+    /// The interned name id, cached after the first use (0 = not yet).
+    pub id: &'static AtomicU16,
+    /// The family's or named target's interned id, likewise.
+    pub target_id: &'static AtomicU16,
+}
+
+impl PartialEq for Declared {
+    fn eq(&self, other: &Self) -> bool {
+        self.target == other.target && self.kind == other.kind && self.name == other.name
+    }
+}
+
+impl Eq for Declared {}
+
+impl std::fmt::Debug for Declared {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Declared({:?}, {:?}, {:?})",
+            self.target, self.kind, self.name
+        )
+    }
+}
+
+/// Intern once, remember in the declaration's own static.
+fn cached(cell: &AtomicU16, name: Name) -> NameId {
+    let v = cell.load(Ordering::Relaxed);
+    if v != 0 {
+        return NameId(v - 1);
+    }
+    let id = intern(name);
+    cell.store(id.0 + 1, Ordering::Relaxed);
+    id
 }
 
 impl Declared {
     /// The slot for a root or named target. Panics for a family: use `at`.
-    pub const fn slot(self) -> crate::project::Slot {
+    pub fn slot(self) -> crate::project::Slot {
         let target = match self.target {
             TargetDecl::Root => crate::project::Target::Root,
-            TargetDecl::Named(n) => crate::project::Target::Named(n),
+            TargetDecl::Named(n) => crate::project::Target::Named(cached(self.target_id, n)),
             TargetDecl::Family { .. } => panic!("a family slot needs an index: use .at(i)"),
         };
         crate::project::Slot {
             target,
             kind: self.kind,
-            name: self.name,
+            name: cached(self.id, self.name),
         }
     }
 
     /// The slot for member `i` of a family.
-    pub const fn at(self, i: u32) -> crate::project::Slot {
+    pub fn at(self, i: u32) -> crate::project::Slot {
         match self.target {
             TargetDecl::Family { name, .. } => crate::project::Slot {
-                target: crate::project::Target::Indexed(name, i),
+                target: crate::project::Target::Indexed(cached(self.target_id, name), i),
                 kind: self.kind,
-                name: self.name,
+                name: cached(self.id, self.name),
             },
             _ => panic!("not a family slot: use .slot()"),
         }
@@ -414,9 +451,9 @@ mod tests {
             s::count.slot(),
             crate::project::Slot::attr(Target::Root, "data-count")
         );
-        assert_eq!(s::fps.slot().name, "--fps");
+        assert_eq!(s::fps.slot().name(), "--fps");
         assert_eq!(s::mode::cleaning, 1);
-        assert_eq!(s::cell::cleaned.at(5).target, Target::Indexed("cell", 5));
+        assert_eq!(s::cell::cleaned.at(5).target, Target::indexed("cell", 5));
         assert_eq!(s::INPUTS, ["run", "pause"]);
         assert_eq!(
             s::MANIFEST.names(),
@@ -441,7 +478,7 @@ mod tests {
         assert_eq!([s::item::KEYED, s::row::KEYED], [true, false]);
         assert_eq!(s::cell::COUNT, Some(6));
         assert_eq!(s::row::COUNT, None, "unbounded");
-        assert_eq!(s::row::title.at(40).target, Target::Indexed("row", 40));
+        assert_eq!(s::row::title.at(40).target, Target::indexed("row", 40));
         assert_eq!(
             s::status.slot(),
             crate::project::Slot::text(Target::Root, "status")

@@ -13,7 +13,9 @@ use std::rc::Rc;
 use crate::event::{Domain, Event};
 use crate::fold::Fold;
 use crate::log::LogView;
-use crate::project::{Change, Name, Projection, Slot, Target, apply, diff};
+use crate::project::{
+    Change, Name, NameId, Projection, Slot, SlotKind, Target, apply, diff, intern,
+};
 use crate::slots::{Manifest, TargetDecl};
 use crate::tracked::{Changes, TrackedVec};
 
@@ -38,6 +40,9 @@ pub type Delta<D, X> = Rc<dyn Fn(&X, &X, &Event<D>) -> Option<Vec<Change>>>;
 /// [`Component::family`] is called.
 pub trait FamilyPlan<X> {
     fn name(&self) -> Name;
+    fn name_id(&self) -> NameId;
+    /// Members addressed by key rather than position.
+    fn keyed(&self) -> bool;
     /// Draw every member into the projection being built.
     fn render(&self, x: &X, into: &mut Projection);
     /// Take the members' change log.
@@ -52,6 +57,7 @@ type AffectsFn<M, C> = Box<dyn Fn(&C, &M) -> bool>;
 
 struct Family<X, M, C> {
     name: Name,
+    name_id: NameId,
     get: fn(&X) -> &TrackedVec<M>,
     get_mut: fn(&mut X) -> &mut TrackedVec<M>,
     /// Members addressed by this key instead of their position; their
@@ -69,7 +75,7 @@ impl<X, M, C: PartialEq> Family<X, M, C> {
         (self.draw)(k, m, ctx, out);
         if self.key.is_some() {
             out.push(Change::Set(
-                Slot::order(Target::Indexed(self.name, k)),
+                Slot::order(Target::Indexed(self.name_id, k)),
                 p as f64,
             ));
         }
@@ -100,10 +106,10 @@ impl<X, M, C: PartialEq> Family<X, M, C> {
                 now.get(i)
                     .is_some_and(|m| was.get(i).is_none_or(|w| key(w) != key(m)))
             });
-        let was_at: std::collections::HashMap<u32, usize> = if moved {
+        let was_at: FxMap<u32, usize> = if moved {
             was.iter().enumerate().map(|(i, m)| (key(m), i)).collect()
         } else {
-            std::collections::HashMap::new()
+            FxMap::default()
         };
         let position_before = |k: u32, i: usize| -> Option<usize> {
             if let Some(m) = was.get(i)
@@ -142,17 +148,17 @@ impl<X, M, C: PartialEq> Family<X, M, C> {
             member_diff(&a, &b, out);
             if p0 != Some(i) {
                 out.push(Change::Set(
-                    Slot::order(Target::Indexed(self.name, k)),
+                    Slot::order(Target::Indexed(self.name_id, k)),
                     i as f64,
                 ));
             }
         }
         // keys that are gone: the order first, then whatever was set
         if shifted {
-            let now_keys: std::collections::HashSet<u32> = now.iter().map(key).collect();
+            let now_keys: FxSet<u32> = now.iter().map(key).collect();
             for m in was.iter().filter(|m| !now_keys.contains(&key(m))) {
                 let k = key(m);
-                out.push(Change::Clear(Slot::order(Target::Indexed(self.name, k))));
+                out.push(Change::Clear(Slot::order(Target::Indexed(self.name_id, k))));
                 a.clear();
                 (self.draw)(k, m, &ctx_was, &mut a);
                 out.extend(a.iter().filter_map(|c| match c {
@@ -170,14 +176,46 @@ impl<X, M, C: PartialEq> FamilyPlan<X> for Family<X, M, C> {
         self.name
     }
 
+    fn name_id(&self) -> NameId {
+        self.name_id
+    }
+
+    fn keyed(&self) -> bool {
+        self.key.is_some()
+    }
+
+    /// Every member's writes go in already sorted: the first member shows
+    /// the order its slots sort in, and each member after it that writes
+    /// the same slots in the same sequence is emitted through that
+    /// permutation. Members ascend by position (or key), so the whole
+    /// batch is sorted and the projection's sort becomes one linear check.
     fn render(&self, x: &X, into: &mut Projection) {
         let (members, ctx) = ((self.get)(x), (self.context)(x));
         let mut buf = Vec::new();
+        let mut pattern: Vec<(SlotKind, NameId)> = Vec::new();
+        let mut perm: Vec<usize> = Vec::new();
         for (i, m) in members.iter().enumerate() {
             buf.clear();
             self.draw_member(i, m, &ctx, &mut buf);
-            for c in &buf {
-                match *c {
+            let same = buf.len() == pattern.len()
+                && buf.iter().zip(&pattern).all(|(c, (k, n))| {
+                    let s = c.slot();
+                    s.kind == *k && s.name == *n
+                });
+            if !same {
+                pattern = buf.iter().map(|c| (c.slot().kind, c.slot().name)).collect();
+                perm = (0..buf.len()).collect();
+                // insertion sort of a handful of indices; nothing to link
+                for a in 1..perm.len() {
+                    let mut b = a;
+                    while b > 0 && buf[perm[b]].slot() < buf[perm[b - 1]].slot() {
+                        perm.swap(b, b - 1);
+                        b -= 1;
+                    }
+                }
+            }
+            for &j in &perm {
+                match buf[j] {
                     Change::Set(slot, v) => into.put(slot, v),
                     Change::Clear(slot) => into.put_absent(slot),
                 }
@@ -247,6 +285,28 @@ impl<X, M, C: PartialEq> FamilyPlan<X> for Family<X, M, C> {
         true
     }
 }
+
+/// A hasher for integer keys: one multiply per word, and none of the
+/// standard library's SipHash in the bundle.
+#[derive(Default)]
+struct Fx(u64);
+
+impl std::hash::Hasher for Fx {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        for b in bytes {
+            self.0 = (self.0.rotate_left(5) ^ u64::from(*b)).wrapping_mul(0x517c_c1b7_2722_0a95);
+        }
+    }
+    fn write_u32(&mut self, i: u32) {
+        self.0 = (self.0.rotate_left(5) ^ u64::from(i)).wrapping_mul(0x517c_c1b7_2722_0a95);
+    }
+}
+
+type FxMap<K, V> = std::collections::HashMap<K, V, std::hash::BuildHasherDefault<Fx>>;
+type FxSet<K> = std::collections::HashSet<K, std::hash::BuildHasherDefault<Fx>>;
 
 /// The changes from one member's slots as they were to as they are:
 /// sets that differ, clears for sets that are gone. Small lists, linear.
@@ -345,7 +405,13 @@ impl<D: Domain, X: Clone + 'static> Component<D, X> {
         }
     }
 
+    /// Attach the declared contract. Its names are interned here, in its
+    /// order, before anything else in the component can intern one, so
+    /// that in a fresh module the ids are the manifest's indices.
     pub fn manifest(mut self, m: &'static Manifest) -> Self {
+        for n in m.names() {
+            intern(n);
+        }
         self.manifest = Some(m);
         self
     }
@@ -415,6 +481,7 @@ impl<D: Domain, X: Clone + 'static> Component<D, X> {
     {
         self.families.push(Rc::new(Family {
             name,
+            name_id: intern(name),
             get,
             get_mut,
             key,

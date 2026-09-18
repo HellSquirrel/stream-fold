@@ -1,0 +1,15 @@
+{
+  "name": "js-framework-benchmark-logfold",
+  "version": "0.0.1",
+  "description": "LogFold: an event-log runtime in Rust/wasm; the page renders from numbers. Benchmark glue only, see src/glue.mjs.",
+  "js-framework-benchmark": {
+    "frameworkVersion": "0.0.1",
+    "frameworkHomeURL": "https://github.com/hellsquirrel/stream-fold",
+    "language": "Rust"
+  },
+  "scripts": {
+    "dev": "exit 0",
+    "build-prod": "exit 0"
+  },
+  "license": "Apache-2.0"
+}
